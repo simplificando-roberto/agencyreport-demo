@@ -498,19 +498,50 @@ async def ai_setup_login(provider: str = "claude", _agency: Agency = Depends(_ge
         codes = re.findall(r'code[:\s]+([A-Z0-9-]{4,})', full_output, re.IGNORECASE)
         device_code = codes[0] if codes else ""
 
+        needs_code = provider == "claude"  # Claude OAuth returns a code to paste back
+
         return {
             "status": "login_started",
             "provider": provider,
             "login_url": login_url,
             "device_code": device_code,
+            "needs_code_input": needs_code,
             "raw_output": full_output,
             "instructions": (
-                f"Abre la URL en tu navegador para autorizar {provider}. "
-                f"Una vez autorizado, vuelve aqui y pulsa 'Verificar'."
+                "1. Abre la URL en tu navegador\n"
+                "2. Autoriza con tu cuenta\n"
+                + ("3. Copia el codigo que te da la pagina y pegalo aqui abajo\n" if needs_code else "3. Vuelve aqui y pulsa 'Verificar'\n")
             ),
         }
     except FileNotFoundError:
         raise HTTPException(400, f"{provider} CLI no esta instalado en el servidor")
+
+
+class CodeInput(BaseModel):
+    code: str
+
+@app.post("/api/ai/setup/code")
+async def ai_setup_send_code(req: CodeInput, provider: str = "claude", _agency: Agency = Depends(_get_current_agency)):
+    """Send the OAuth code back to the waiting CLI process."""
+    proc = _login_processes.get(provider)
+    if not proc or proc.returncode is not None:
+        raise HTTPException(400, "No hay proceso de login activo. Inicia el login primero.")
+    try:
+        proc.stdin.write(f"{req.code.strip()}\n".encode())
+        await proc.stdin.drain()
+        # Wait a moment for the process to complete
+        await asyncio.sleep(3)
+        # Check if auth succeeded
+        status = await _check_cli_status(provider)
+        if provider in _login_processes:
+            try:
+                _login_processes[provider].kill()
+            except Exception:
+                pass
+            del _login_processes[provider]
+        return {"provider": provider, "authenticated": status["authenticated"], "message": "Autenticado correctamente!" if status["authenticated"] else "Codigo no valido o expirado. Intenta de nuevo."}
+    except Exception as e:
+        return {"provider": provider, "authenticated": False, "message": f"Error: {str(e)[:200]}"}
 
 
 @app.post("/api/ai/setup/verify")

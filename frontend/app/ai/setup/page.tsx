@@ -20,6 +20,7 @@ type SetupStatus = {
 type LoginResult = {
   login_url: string;
   device_code: string;
+  needs_code_input: boolean;
   instructions: string;
   raw_output: string;
 };
@@ -31,6 +32,8 @@ export default function AISetupPage() {
   const [loginProvider, setLoginProvider] = useState("");
   const [loggingIn, setLoggingIn] = useState(false);
   const [verifying, setVerifying] = useState(false);
+  const [oauthCode, setOauthCode] = useState("");
+  const [sendingCode, setSendingCode] = useState(false);
   const [message, setMessage] = useState("");
 
   const loadStatus = async () => {
@@ -72,6 +75,27 @@ export default function AISetupPage() {
       await loadStatus();
     } catch { setMessage("Error al verificar"); }
     finally { setVerifying(false); }
+  };
+
+  const sendCode = async (provider: string) => {
+    if (!oauthCode.trim()) return;
+    setSendingCode(true);
+    setMessage("");
+    try {
+      const r = await apiFetch(`/ai/setup/code?provider=${provider}`, {
+        method: "POST", body: JSON.stringify({ code: oauthCode.trim() }),
+      });
+      const data = await r.json();
+      if (data.authenticated) {
+        setMessage("Autenticado correctamente!");
+        setLoginResult(null);
+        setOauthCode("");
+      } else {
+        setMessage(data.message || "Codigo no valido. Intenta de nuevo.");
+      }
+      await loadStatus();
+    } catch { setMessage("Error al enviar codigo"); }
+    finally { setSendingCode(false); }
   };
 
   const setDefault = async (provider: string) => {
@@ -167,27 +191,55 @@ export default function AISetupPage() {
             {/* Login flow */}
             {loginResult && loginProvider === key && (
               <div className="mt-4 bg-amber-50 border border-amber-200 rounded-xl p-4">
-                <p className="text-sm font-medium text-amber-800 mb-2">Completa el login:</p>
+                <p className="text-sm font-medium text-amber-800 mb-3">Completa el login:</p>
+
+                {/* Step 1: Open URL */}
                 {loginResult.login_url && (
-                  <div className="mb-3">
-                    <p className="text-sm text-amber-700 mb-1">Abre esta URL en tu navegador:</p>
+                  <div className="mb-4">
+                    <p className="text-sm text-amber-700 mb-2 font-medium">Paso 1: Abre esta URL en tu navegador</p>
                     <a href={loginResult.login_url} target="_blank" rel="noopener noreferrer"
-                      className="text-blue-600 underline text-sm break-all">{loginResult.login_url}</a>
+                      className="inline-block bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700">
+                      Abrir pagina de autorizacion
+                    </a>
                   </div>
                 )}
+
+                {/* Step 2: Paste code (Claude OAuth) */}
+                {loginResult.needs_code_input && (
+                  <div className="mb-4">
+                    <p className="text-sm text-amber-700 mb-2 font-medium">Paso 2: Pega el codigo que te da la pagina</p>
+                    <div className="flex gap-2">
+                      <input value={oauthCode} onChange={e => setOauthCode(e.target.value)}
+                        placeholder="Pega aqui el codigo..."
+                        className="flex-1 border border-amber-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none" />
+                      <button onClick={() => sendCode(key)} disabled={sendingCode || !oauthCode.trim()}
+                        className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50">
+                        {sendingCode ? "Enviando..." : "Enviar codigo"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Device code (Codex) */}
                 {loginResult.device_code && (
-                  <div className="mb-3">
-                    <p className="text-sm text-amber-700 mb-1">Introduce este codigo:</p>
+                  <div className="mb-4">
+                    <p className="text-sm text-amber-700 mb-1">Introduce este codigo en la pagina:</p>
                     <code className="bg-white px-3 py-2 rounded text-lg font-mono font-bold">{loginResult.device_code}</code>
                   </div>
                 )}
+
+                {/* Fallback: raw output */}
                 {!loginResult.login_url && !loginResult.device_code && loginResult.raw_output && (
                   <pre className="bg-white rounded p-3 text-xs text-gray-600 overflow-x-auto whitespace-pre-wrap">{loginResult.raw_output}</pre>
                 )}
-                <button onClick={() => verify(key)} disabled={verifying}
-                  className="mt-3 bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50">
-                  {verifying ? "Verificando..." : "Verificar autenticacion"}
-                </button>
+
+                {/* Verify button (for flows without code input) */}
+                {!loginResult.needs_code_input && (
+                  <button onClick={() => verify(key)} disabled={verifying}
+                    className="mt-2 bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50">
+                    {verifying ? "Verificando..." : "Verificar autenticacion"}
+                  </button>
+                )}
               </div>
             )}
           </div>
