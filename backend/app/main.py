@@ -66,9 +66,6 @@ async def _seed_demo(db: AsyncSession):
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    async with get_db() as db:
-        # get_db is a generator, instantiate manually
-        pass
     from app.core.database import SessionLocal
     async with SessionLocal() as db:
         await _seed_demo(db)
