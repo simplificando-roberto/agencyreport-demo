@@ -426,7 +426,7 @@ DATOS DISPONIBLES:
 # ---------------------------------------------------------------------------
 
 # Persistent config on disk
-_AI_CONFIG_PATH = Path("/app/ai_config.json")
+_AI_CONFIG_PATH = Path("/app/config/ai_config.json") if Path("/app/config").is_dir() else Path("/app/ai_config.json")
 _login_processes: dict[str, asyncio.subprocess.Process] = {}
 
 def _load_ai_config() -> dict:

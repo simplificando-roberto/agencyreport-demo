@@ -17,6 +17,9 @@ RUN apt-get update -qq && apt-get install -y -qq curl && \
     apt-get install -y -qq nodejs && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Install AI CLIs (claude code + codex) inside container
+RUN npm install -g @openai/codex@latest 2>/dev/null || true
+
 # Python backend
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
