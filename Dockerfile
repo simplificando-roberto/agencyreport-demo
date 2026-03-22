@@ -1,20 +1,35 @@
-# Stage 1: Build Next.js frontend as static HTML
+# Stage 1: Build Next.js frontend (standalone mode)
 FROM node:22-alpine AS frontend
 WORKDIR /build
 COPY frontend/package.json ./
 RUN npm install --legacy-peer-deps
 COPY frontend/ .
+ENV API_URL=http://localhost:8000
 RUN npm run build
 
-# Stage 2: Python backend + static frontend
+# Stage 2: Runtime with Python backend + Node frontend
 FROM python:3.12-slim
 WORKDIR /app
 
+# Install Node.js for Next.js standalone server
+RUN apt-get update -qq && apt-get install -y -qq curl && \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y -qq nodejs && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Python backend
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
 COPY backend/app/ app/
-COPY --from=frontend /build/out/ /app/static/
 
-EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Next.js standalone build
+COPY --from=frontend /build/.next/standalone /app/frontend/
+COPY --from=frontend /build/.next/static /app/frontend/.next/static/
+COPY --from=frontend /build/public /app/frontend/public/ 2>/dev/null || true
+
+# Start script: both backend and frontend
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+
+EXPOSE 8000 3000
+CMD ["/app/start.sh"]
