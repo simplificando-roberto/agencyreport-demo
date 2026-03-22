@@ -596,76 +596,89 @@ DATOS DISPONIBLES:
 
 
 # ---------------------------------------------------------------------------
-# Web Terminal (PTY over WebSocket)
+# Terminal Session (HTTP-based PTY for CLI login)
 # ---------------------------------------------------------------------------
 
 import os
 import pty
-import termios
-from fastapi import WebSocket, WebSocketDisconnect
+import fcntl as _fcntl
 
-@app.websocket("/api/ai/terminal")
-async def ai_terminal(ws: WebSocket):
-    """WebSocket PTY for interactive CLI login (claude login, codex login)."""
-    await ws.accept()
+_terminal_sessions: dict[str, dict] = {}
 
-    # Create PTY
+
+def _create_pty_session(session_id: str, command: str) -> dict:
+    """Create a PTY session running a command."""
     master_fd, slave_fd = pty.openpty()
     pid = os.fork()
-
     if pid == 0:
-        # Child process: attach to PTY and exec bash
         os.close(master_fd)
         os.setsid()
-        fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
         os.dup2(slave_fd, 0)
         os.dup2(slave_fd, 1)
         os.dup2(slave_fd, 2)
         os.close(slave_fd)
-        os.execvp("bash", ["bash", "--login"])
-
-    # Parent: bridge WebSocket <-> PTY
+        os.execvp("bash", ["bash", "-c", command])
     os.close(slave_fd)
-
-    # Set master_fd to non-blocking
-    import fcntl as _fcntl
+    # Non-blocking reads
     flags = _fcntl.fcntl(master_fd, _fcntl.F_GETFL)
     _fcntl.fcntl(master_fd, _fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    session = {"pid": pid, "master_fd": master_fd, "output": "", "command": command}
+    _terminal_sessions[session_id] = session
+    return session
 
-    async def read_pty():
-        """Read from PTY and send to WebSocket."""
-        loop = asyncio.get_event_loop()
+
+@app.post("/api/ai/terminal/start")
+async def terminal_start(command: str = "claude login", _agency: Agency = Depends(_get_current_agency)):
+    """Start a PTY session with the given command."""
+    import uuid
+    session_id = str(uuid.uuid4())[:8]
+    # Kill existing sessions
+    for sid in list(_terminal_sessions.keys()):
         try:
-            while True:
-                await asyncio.sleep(0.05)
-                try:
-                    data = os.read(master_fd, 4096)
-                    if data:
-                        await ws.send_text(data.decode("utf-8", errors="replace"))
-                except (OSError, BlockingIOError):
-                    pass
+            os.kill(_terminal_sessions[sid]["pid"], 9)
+            os.close(_terminal_sessions[sid]["master_fd"])
         except Exception:
             pass
+    _terminal_sessions.clear()
+    _create_pty_session(session_id, command)
+    await asyncio.sleep(1)
+    return {"session_id": session_id, "command": command}
 
-    reader_task = asyncio.create_task(read_pty())
 
+@app.get("/api/ai/terminal/read")
+async def terminal_read(session_id: str, _agency: Agency = Depends(_get_current_agency)):
+    """Read new output from the PTY session."""
+    session = _terminal_sessions.get(session_id)
+    if not session:
+        return {"output": "", "alive": False}
     try:
-        while True:
-            data = await ws.receive_text()
-            if data:
-                os.write(master_fd, data.encode("utf-8"))
-    except WebSocketDisconnect:
-        pass
+        data = os.read(session["master_fd"], 8192)
+        text = data.decode("utf-8", errors="replace")
+    except (OSError, BlockingIOError):
+        text = ""
+    # Check if process is still running
+    try:
+        pid_result = os.waitpid(session["pid"], os.WNOHANG)
+        alive = pid_result[0] == 0
+    except ChildProcessError:
+        alive = False
+    return {"output": text, "alive": alive}
+
+
+class TerminalInput(BaseModel):
+    text: str
+
+@app.post("/api/ai/terminal/write")
+async def terminal_write(req: TerminalInput, session_id: str, _agency: Agency = Depends(_get_current_agency)):
+    """Send input to the PTY session."""
+    session = _terminal_sessions.get(session_id)
+    if not session:
+        return {"ok": False}
+    try:
+        os.write(session["master_fd"], req.text.encode("utf-8"))
+        return {"ok": True}
     except Exception:
-        pass
-    finally:
-        reader_task.cancel()
-        os.close(master_fd)
-        try:
-            os.kill(pid, 9)
-            os.waitpid(pid, 0)
-        except Exception:
-            pass
+        return {"ok": False}
 
 
 # ---------------------------------------------------------------------------
