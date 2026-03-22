@@ -1,17 +1,15 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { useSearchParams } from "next/navigation";
 import { apiFetch, API } from "../../lib/api";
 
 type ClientData = { id: string; name: string };
 type ReportData = { id: string; title: string; period_start: string; period_end: string; ai_summary: string | null; channels: string[]; created_at: string };
 
 export default function ReportsPage() {
-  const searchParams = useSearchParams();
   const [clients, setClients] = useState<ClientData[]>([]);
   const [reports, setReports] = useState<ReportData[]>([]);
-  const [selectedClient, setSelectedClient] = useState(searchParams?.get("client") || "");
+  const [selectedClient, setSelectedClient] = useState("");
   const [period, setPeriod] = useState(30);
   const [generating, setGenerating] = useState(false);
   const [latestReport, setLatestReport] = useState<ReportData | null>(null);
