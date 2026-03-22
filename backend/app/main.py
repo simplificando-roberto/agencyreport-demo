@@ -6,8 +6,8 @@ from uuid import UUID
 
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+import hashlib
 from jose import jwt
-from passlib.hash import bcrypt
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,7 +29,7 @@ async def _seed_demo(db: AsyncSession):
     agency = Agency(
         name="Demo Agency",
         email="demo@agency.test",
-        password_hash=bcrypt.hash("demo1234"),
+        password_hash=hashlib.sha256(b"demo1234").hexdigest(),
         brand_color="#2563eb",
     )
     db.add(agency)
@@ -163,7 +163,7 @@ async def health():
 async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Agency).where(Agency.email == req.email))
     agency = result.scalar_one_or_none()
-    if not agency or not bcrypt.verify(req.password, agency.password_hash):
+    if not agency or agency.password_hash != hashlib.sha256(req.password.encode()).hexdigest():
         raise HTTPException(401, "Credenciales invalidas")
     token = _create_token(str(agency.id))
     return TokenResponse(access_token=token, agency_name=agency.name, agency_id=str(agency.id))
