@@ -1,67 +1,81 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import Link from "next/link";
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { API, isLoggedIn } from "../lib/api";
 
-type ClientData = { id: string; name: string; industry: string; channels: Record<string, boolean>; created_at: string };
-type Overview = { total_clients: number; active_alerts: number; total_metrics_today: number; clients: ClientData[] };
-
-const API = "/api";
-
-export default function Home() {
-  const [overview, setOverview] = useState<Overview | null>(null);
-  const [loading, setLoading] = useState(true);
+export default function LoginPage() {
+  const router = useRouter();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    fetch(`${API}/dashboard/overview`).then(r => r.json()).then(setOverview).finally(() => setLoading(false));
-  }, []);
+    if (isLoggedIn()) router.push("/dashboard/");
+  }, [router]);
 
-  if (loading) return <div className="flex items-center justify-center h-screen"><p className="text-lg">Cargando...</p></div>;
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.detail || "Credenciales invalidas");
+        return;
+      }
+      const data = await res.json();
+      localStorage.setItem("token", data.access_token);
+      localStorage.setItem("agency", data.agency_name);
+      router.push("/dashboard/");
+    } catch {
+      setError("Error de conexion");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <div className="max-w-6xl mx-auto p-6">
-      <header className="mb-8">
-        <h1 className="text-3xl font-bold text-blue-600">AgencyReport</h1>
-        <p className="text-gray-500 mt-1">Reporting automatizado para tu agencia</p>
-      </header>
-
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-        <div className="bg-white rounded-xl shadow p-6">
-          <p className="text-sm text-gray-500 uppercase tracking-wide">Clientes</p>
-          <p className="text-4xl font-bold mt-2">{overview?.total_clients ?? 0}</p>
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100">
+      <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
+        <div className="text-center mb-8">
+          <h1 className="text-3xl font-bold text-blue-600">AgencyReport</h1>
+          <p className="text-gray-500 mt-2">Reporting automatizado para tu agencia</p>
         </div>
-        <div className="bg-white rounded-xl shadow p-6">
-          <p className="text-sm text-gray-500 uppercase tracking-wide">Alertas activas</p>
-          <p className="text-4xl font-bold mt-2 text-amber-500">{overview?.active_alerts ?? 0}</p>
-        </div>
-        <div className="bg-white rounded-xl shadow p-6">
-          <p className="text-sm text-gray-500 uppercase tracking-wide">Metricas hoy</p>
-          <p className="text-4xl font-bold mt-2 text-green-600">{overview?.total_metrics_today ?? 0}</p>
-        </div>
-      </div>
 
-      {/* Client List */}
-      <h2 className="text-xl font-semibold mb-4">Clientes</h2>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {overview?.clients.map(c => (
-          <Link key={c.id} href={`/dashboard/${c.id}`} className="block bg-white rounded-xl shadow hover:shadow-lg transition-shadow p-6">
-            <h3 className="text-lg font-bold">{c.name}</h3>
-            <p className="text-sm text-gray-500">{c.industry}</p>
-            <div className="flex gap-2 mt-3">
-              {Object.keys(c.channels).map(ch => (
-                <span key={ch} className="bg-blue-100 text-blue-700 text-xs px-2 py-1 rounded-full">{ch.replace("_", " ")}</span>
-              ))}
-            </div>
-          </Link>
-        ))}
-      </div>
+        <form onSubmit={handleLogin} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+            <input
+              type="email" value={email} onChange={e => setEmail(e.target.value)}
+              className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+              placeholder="admin@agency.test" required
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+            <input
+              type="password" value={password} onChange={e => setPassword(e.target.value)}
+              className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+              placeholder="********" required
+            />
+          </div>
 
-      {/* Quick actions */}
-      <div className="mt-8 flex gap-4">
-        <Link href="/reports" className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors font-medium">
-          Ver Reportes
-        </Link>
+          {error && <p className="text-red-500 text-sm bg-red-50 p-3 rounded-lg">{error}</p>}
+
+          <button
+            type="submit" disabled={loading}
+            className="w-full bg-blue-600 text-white py-3 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
+          >
+            {loading ? "Iniciando sesion..." : "Iniciar sesion"}
+          </button>
+        </form>
       </div>
     </div>
   );
