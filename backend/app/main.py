@@ -524,22 +524,49 @@ class CodeInput(BaseModel):
 async def ai_setup_send_code(req: CodeInput, provider: str = "claude", _agency: Agency = Depends(_get_current_agency)):
     """Send the OAuth code back to the waiting CLI process."""
     proc = _login_processes.get(provider)
+
+    # If process died, restart it and send code immediately
     if not proc or proc.returncode is not None:
-        raise HTTPException(400, "No hay proceso de login activo. Inicia el login primero.")
+        log.info("Login process expired, restarting for code input...")
+        try:
+            if provider == "claude":
+                proc = await asyncio.create_subprocess_exec(
+                    "claude", "auth", "login", "--claudeai",
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                    stdin=asyncio.subprocess.PIPE)
+            elif provider == "codex":
+                proc = await asyncio.create_subprocess_exec(
+                    "codex", "login", "--device-auth",
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                    stdin=asyncio.subprocess.PIPE)
+            else:
+                raise HTTPException(400, f"Proveedor desconocido: {provider}")
+            _login_processes[provider] = proc
+            # Wait for it to be ready for input
+            await asyncio.sleep(2)
+        except FileNotFoundError:
+            raise HTTPException(400, f"{provider} CLI no esta instalado")
+
     try:
-        proc.stdin.write(f"{req.code.strip()}\n".encode())
-        await proc.stdin.drain()
-        # Wait a moment for the process to complete
-        await asyncio.sleep(3)
+        if proc.stdin:
+            proc.stdin.write(f"{req.code.strip()}\n".encode())
+            await proc.stdin.drain()
+        # Wait for the process to complete auth
+        await asyncio.sleep(5)
         # Check if auth succeeded
         status = await _check_cli_status(provider)
+        # Cleanup
         if provider in _login_processes:
             try:
                 _login_processes[provider].kill()
             except Exception:
                 pass
             del _login_processes[provider]
-        return {"provider": provider, "authenticated": status["authenticated"], "message": "Autenticado correctamente!" if status["authenticated"] else "Codigo no valido o expirado. Intenta de nuevo."}
+        return {
+            "provider": provider,
+            "authenticated": status["authenticated"],
+            "message": "Autenticado correctamente!" if status["authenticated"] else "Codigo no valido o expirado. Intenta de nuevo.",
+        }
     except Exception as e:
         return {"provider": provider, "authenticated": False, "message": f"Error: {str(e)[:200]}"}
 
