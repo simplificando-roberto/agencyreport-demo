@@ -2,6 +2,7 @@
 
 import asyncio
 import csv
+import fcntl
 import hashlib
 import io
 import json
@@ -593,6 +594,81 @@ DATOS DISPONIBLES:
     except Exception as e:
         return ChatResponse(response=f"Error: {str(e)[:200]}", status="error", remaining_requests=remaining)
 
+
+
+# ---------------------------------------------------------------------------
+# Web Terminal (PTY over WebSocket)
+# ---------------------------------------------------------------------------
+
+import os
+import pty
+import select
+import struct
+import termios
+from fastapi import WebSocket, WebSocketDisconnect
+
+@app.websocket("/api/ai/terminal")
+async def ai_terminal(ws: WebSocket):
+    """WebSocket PTY for interactive CLI login (claude login, codex login)."""
+    await ws.accept()
+
+    # Create PTY
+    master_fd, slave_fd = pty.openpty()
+    pid = os.fork()
+
+    if pid == 0:
+        # Child process: attach to PTY and exec bash
+        os.close(master_fd)
+        os.setsid()
+        fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+        os.dup2(slave_fd, 0)
+        os.dup2(slave_fd, 1)
+        os.dup2(slave_fd, 2)
+        os.close(slave_fd)
+        os.execvp("bash", ["bash", "--login"])
+
+    # Parent: bridge WebSocket <-> PTY
+    os.close(slave_fd)
+
+    # Set master_fd to non-blocking
+    import fcntl as _fcntl
+    flags = _fcntl.fcntl(master_fd, _fcntl.F_GETFL)
+    _fcntl.fcntl(master_fd, _fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+    async def read_pty():
+        """Read from PTY and send to WebSocket."""
+        loop = asyncio.get_event_loop()
+        try:
+            while True:
+                await asyncio.sleep(0.05)
+                try:
+                    data = os.read(master_fd, 4096)
+                    if data:
+                        await ws.send_text(data.decode("utf-8", errors="replace"))
+                except (OSError, BlockingIOError):
+                    pass
+        except Exception:
+            pass
+
+    reader_task = asyncio.create_task(read_pty())
+
+    try:
+        while True:
+            data = await ws.receive_text()
+            if data:
+                os.write(master_fd, data.encode("utf-8"))
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        reader_task.cancel()
+        os.close(master_fd)
+        try:
+            os.kill(pid, 9)
+            os.waitpid(pid, 0)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
