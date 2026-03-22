@@ -25,7 +25,6 @@ COPY backend/app/ app/
 # Next.js standalone build
 COPY --from=frontend /build/.next/standalone /app/frontend/
 COPY --from=frontend /build/.next/static /app/frontend/.next/static/
-COPY --from=frontend /build/public /app/frontend/public/ 2>/dev/null || true
 
 # Start script: both backend and frontend
 COPY start.sh /app/start.sh
