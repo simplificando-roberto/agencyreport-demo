@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import Link from "next/link";
 import { apiFetch } from "../../lib/api";
 
 type Message = { role: "user" | "ai"; text: string; ts: string };
@@ -74,6 +75,7 @@ export default function AIChatPage() {
             {clients.map(c => <option key={c.id} value={c.id}>{c.name} ({c.industry})</option>)}
           </select>
           <span className="text-xs text-gray-400 ml-auto">{remaining} consultas restantes esta hora</span>
+          <Link href="/ai/setup/" className="text-xs bg-gray-100 text-gray-600 px-3 py-1 rounded-lg hover:bg-gray-200">Configuracion</Link>
           <button onClick={() => setShowHelp(!showHelp)} className="text-xs text-blue-500 hover:underline">Ayuda</button>
           {messages.length > 0 && <button onClick={clearChat} className="text-xs text-red-400 hover:text-red-600">Limpiar chat</button>}
         </div>

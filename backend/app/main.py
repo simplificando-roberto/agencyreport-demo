@@ -422,6 +422,247 @@ DATOS DISPONIBLES:
         return ChatResponse(response=f"Error: {str(e)[:200]}", status="error", remaining_requests=remaining)
 
 # ---------------------------------------------------------------------------
+# AI Setup (login/config)
+# ---------------------------------------------------------------------------
+
+# Persistent config on disk
+_AI_CONFIG_PATH = Path("/app/ai_config.json")
+_login_processes: dict[str, asyncio.subprocess.Process] = {}
+
+def _load_ai_config() -> dict:
+    if _AI_CONFIG_PATH.exists():
+        return json.loads(_AI_CONFIG_PATH.read_text())
+    return {"default_provider": "claude"}
+
+def _save_ai_config(cfg: dict):
+    _AI_CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+
+
+async def _check_cli_status(cli: str) -> dict:
+    """Check if a CLI is installed and authenticated."""
+    result = {"installed": False, "authenticated": False, "version": ""}
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            cli, "--version", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        if proc.returncode == 0:
+            result["installed"] = True
+            result["version"] = stdout.decode().strip()
+    except (FileNotFoundError, asyncio.TimeoutError):
+        return result
+
+    # Check auth
+    try:
+        if cli == "claude":
+            proc = await asyncio.create_subprocess_exec(
+                "claude", "auth", "status", "--json",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+            data = json.loads(stdout.decode())
+            result["authenticated"] = data.get("loggedIn", False)
+        elif cli == "codex":
+            proc = await asyncio.create_subprocess_exec(
+                "codex", "login", "status",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+            result["authenticated"] = proc.returncode == 0 and "logged in" in stdout.decode().lower()
+    except Exception:
+        pass
+    return result
+
+
+@app.get("/api/ai/setup/status")
+async def ai_setup_status(_agency: Agency = Depends(_get_current_agency)):
+    """Get status of all AI providers."""
+    claude_status = await _check_cli_status("claude")
+    codex_status = await _check_cli_status("codex")
+    config = _load_ai_config()
+    return {
+        "default_provider": config.get("default_provider", "claude"),
+        "providers": {
+            "claude": {**claude_status, "name": "Claude Code", "login_method": "OAuth (abre URL en navegador)"},
+            "codex": {**codex_status, "name": "Codex (OpenAI)", "login_method": "Device auth (codigo + URL)"},
+        },
+    }
+
+
+@app.post("/api/ai/setup/login")
+async def ai_setup_login(provider: str = "claude", _agency: Agency = Depends(_get_current_agency)):
+    """Start login process for a provider. Returns URL/code for the user to complete."""
+    if provider in _login_processes:
+        # Kill any existing login process
+        try:
+            _login_processes[provider].kill()
+        except Exception:
+            pass
+        del _login_processes[provider]
+
+    try:
+        if provider == "claude":
+            proc = await asyncio.create_subprocess_exec(
+                "claude", "auth", "login", "--claudeai",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.PIPE)
+        elif provider == "codex":
+            proc = await asyncio.create_subprocess_exec(
+                "codex", "login", "--device-auth",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.PIPE)
+        else:
+            raise HTTPException(400, f"Proveedor desconocido: {provider}")
+
+        _login_processes[provider] = proc
+
+        # Read output for ~10 seconds to capture the URL/code
+        output_lines = []
+        try:
+            for _ in range(20):
+                await asyncio.sleep(0.5)
+                if proc.stdout and proc.stdout._buffer:  # type: ignore
+                    data = await asyncio.wait_for(proc.stdout.read(4096), timeout=1)
+                    if data:
+                        output_lines.append(data.decode("utf-8", errors="replace"))
+                if proc.stderr and proc.stderr._buffer:  # type: ignore
+                    data = await asyncio.wait_for(proc.stderr.read(4096), timeout=1)
+                    if data:
+                        output_lines.append(data.decode("utf-8", errors="replace"))
+                if proc.returncode is not None:
+                    break
+        except (asyncio.TimeoutError, Exception):
+            pass
+
+        full_output = "\n".join(output_lines)
+
+        # Extract URL from output
+        import re
+        urls = re.findall(r'https?://[^\s\)\"\']+', full_output)
+        login_url = urls[0] if urls else ""
+
+        # Extract device code if present
+        codes = re.findall(r'code[:\s]+([A-Z0-9-]{4,})', full_output, re.IGNORECASE)
+        device_code = codes[0] if codes else ""
+
+        return {
+            "status": "login_started",
+            "provider": provider,
+            "login_url": login_url,
+            "device_code": device_code,
+            "raw_output": full_output,
+            "instructions": (
+                f"Abre la URL en tu navegador para autorizar {provider}. "
+                f"Una vez autorizado, vuelve aqui y pulsa 'Verificar'."
+            ),
+        }
+    except FileNotFoundError:
+        raise HTTPException(400, f"{provider} CLI no esta instalado en el servidor")
+
+
+@app.post("/api/ai/setup/verify")
+async def ai_setup_verify(provider: str = "claude", _agency: Agency = Depends(_get_current_agency)):
+    """Check if login completed successfully."""
+    status = await _check_cli_status(provider)
+    if provider in _login_processes:
+        try:
+            _login_processes[provider].kill()
+        except Exception:
+            pass
+        del _login_processes[provider]
+    return {"provider": provider, "authenticated": status["authenticated"], "version": status["version"]}
+
+
+@app.post("/api/ai/setup/default")
+async def ai_setup_set_default(provider: str = "claude", _agency: Agency = Depends(_get_current_agency)):
+    """Set the default AI provider."""
+    config = _load_ai_config()
+    config["default_provider"] = provider
+    _save_ai_config(config)
+    return {"default_provider": provider}
+
+
+@app.post("/api/ai/setup/logout")
+async def ai_setup_logout(provider: str = "claude", _agency: Agency = Depends(_get_current_agency)):
+    """Logout from a provider (removes credentials from server)."""
+    try:
+        if provider == "claude":
+            proc = await asyncio.create_subprocess_exec("claude", "auth", "logout", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        elif provider == "codex":
+            proc = await asyncio.create_subprocess_exec("codex", "login", "--with-api-key", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            proc.stdin.write(b"\n")  # Empty key = logout
+            proc.stdin.close()
+        else:
+            raise HTTPException(400, f"Proveedor desconocido: {provider}")
+        await asyncio.wait_for(proc.communicate(), timeout=10)
+    except Exception:
+        pass
+    return {"status": "logged_out", "provider": provider}
+
+
+# ---------------------------------------------------------------------------
+# Update AI chat to use configured provider
+# ---------------------------------------------------------------------------
+
+# Patch the existing ai_chat endpoint to read default_provider
+_original_ai_chat = ai_chat
+
+@app.post("/api/ai/chat", response_model=ChatResponse, name="ai_chat_v2")
+async def ai_chat_v2(req: ChatRequest, db: AsyncSession = Depends(get_db), agency: Agency = Depends(_get_current_agency)):
+    # Override the provider based on config
+    config = _load_ai_config()
+    provider = config.get("default_provider", "claude")
+
+    allowed, remaining = _check_rate_limit(str(agency.id))
+    if not allowed:
+        raise HTTPException(429, "Limite de peticiones alcanzado (10/hora)")
+
+    # Build context
+    if req.client_id:
+        client_r = await db.execute(select(Client).where(Client.id == UUID(req.client_id)))
+        client = client_r.scalar_one_or_none()
+        cutoff = datetime.utcnow() - timedelta(days=30)
+        metrics_r = await db.execute(select(Metric).where(Metric.client_id == UUID(req.client_id), Metric.date >= cutoff).order_by(Metric.date.desc()).limit(30))
+        metrics = metrics_r.scalars().all()
+        context = f"Cliente: {client.name} ({client.industry})\nCanales: {', '.join(client.channels.keys())}\nMetricas ultimos 30 dias:\n"
+        for m in metrics[:20]:
+            context += f"  {m.date.strftime('%d/%m')}: {m.channel}/{m.metric_name} = {m.value:.1f}\n"
+    else:
+        clients_summary = await _get_clients_summary(db, agency.id)
+        context = f"Agencia: {agency.name}\nClientes:\n{json.dumps(clients_summary, indent=2, ensure_ascii=False)}"
+
+    system_prompt = f"""Eres el asistente IA de AgencyReport para la agencia "{agency.name}".
+Tienes acceso a datos reales de metricas de marketing digital.
+Responde siempre en espanol. Se conciso y practico.
+Usa datos concretos en tus respuestas cuando los tengas.
+
+DATOS DISPONIBLES:
+{context}"""
+
+    try:
+        if provider == "claude":
+            cmd = ["claude", "--print", "-p", f"[System: {system_prompt}]\n\nUsuario: {req.message}"]
+        elif provider == "codex":
+            cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", f"{system_prompt}\n\n{req.message}"]
+        else:
+            return ChatResponse(response=f"Proveedor '{provider}' no configurado", status="error", remaining_requests=remaining)
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd="/app")
+        stdout_data, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
+        response_text = stdout_data.decode("utf-8", errors="replace").strip()
+        if not response_text:
+            response_text = "No pude generar una respuesta. Verifica que el proveedor este autenticado en Configuracion."
+        return ChatResponse(response=response_text, status="ok", remaining_requests=remaining)
+    except asyncio.TimeoutError:
+        return ChatResponse(response="El asistente tardo demasiado.", status="timeout", remaining_requests=remaining)
+    except FileNotFoundError:
+        return ChatResponse(response=f"{provider} no esta instalado. Ve a Chat IA > Configuracion para verificar.", status="unavailable", remaining_requests=remaining)
+    except Exception as e:
+        return ChatResponse(response=f"Error: {str(e)[:200]}", status="error", remaining_requests=remaining)
+
+# Remove the original duplicated route
+app.routes = [r for r in app.routes if not (hasattr(r, 'name') and r.name == 'ai_chat')]
+
+
+# ---------------------------------------------------------------------------
 # Static files (frontend) - MUST be last
 # ---------------------------------------------------------------------------
 _static_dir = Path("/app/static")
