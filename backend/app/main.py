@@ -376,50 +376,6 @@ async def ai_suggestions(client_id: str | None = None):
         return {"suggestions": base + ["Compara el ultimo mes con el anterior", "Que metricas estan por debajo del objetivo?"]}
     return {"suggestions": base}
 
-@app.post("/api/ai/chat", response_model=ChatResponse)
-async def ai_chat(req: ChatRequest, db: AsyncSession = Depends(get_db), agency: Agency = Depends(_get_current_agency)):
-    allowed, remaining = _check_rate_limit(str(agency.id))
-    if not allowed:
-        raise HTTPException(429, "Limite de peticiones alcanzado (10/hora)")
-
-    # Build context with real client data
-    if req.client_id:
-        client_r = await db.execute(select(Client).where(Client.id == UUID(req.client_id)))
-        client = client_r.scalar_one_or_none()
-        cutoff = datetime.utcnow() - timedelta(days=30)
-        metrics_r = await db.execute(select(Metric).where(Metric.client_id == UUID(req.client_id), Metric.date >= cutoff).order_by(Metric.date.desc()).limit(30))
-        metrics = metrics_r.scalars().all()
-        context = f"Cliente: {client.name} ({client.industry})\nCanales: {', '.join(client.channels.keys())}\nMetricas ultimos 30 dias:\n"
-        for m in metrics[:20]:
-            context += f"  {m.date.strftime('%d/%m')}: {m.channel}/{m.metric_name} = {m.value:.1f}\n"
-    else:
-        clients_summary = await _get_clients_summary(db, agency.id)
-        context = f"Agencia: {agency.name}\nClientes:\n{json.dumps(clients_summary, indent=2, ensure_ascii=False)}"
-
-    system_prompt = f"""Eres el asistente IA de AgencyReport para la agencia "{agency.name}".
-Tienes acceso a datos reales de metricas de marketing digital.
-Responde siempre en espanol. Se conciso y practico.
-Usa datos concretos en tus respuestas cuando los tengas.
-
-DATOS DISPONIBLES:
-{context}"""
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "claude", "--print", "-p", f"[System: {system_prompt}]\n\nUsuario: {req.message}",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd="/app",
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-        response_text = stdout.decode("utf-8", errors="replace").strip()
-        if not response_text:
-            response_text = "No pude generar una respuesta. Intenta reformular tu pregunta."
-        return ChatResponse(response=response_text, status="ok", remaining_requests=remaining)
-    except asyncio.TimeoutError:
-        return ChatResponse(response="El asistente tardo demasiado. Intenta con una pregunta mas concreta.", status="timeout", remaining_requests=remaining)
-    except FileNotFoundError:
-        return ChatResponse(response="El asistente IA no esta disponible en este momento.", status="unavailable", remaining_requests=remaining)
-    except Exception as e:
-        return ChatResponse(response=f"Error: {str(e)[:200]}", status="error", remaining_requests=remaining)
 
 # ---------------------------------------------------------------------------
 # AI Setup (login/config)
@@ -602,9 +558,7 @@ async def ai_setup_logout(provider: str = "claude", _agency: Agency = Depends(_g
 # ---------------------------------------------------------------------------
 
 # Patch the existing ai_chat endpoint to read default_provider
-_original_ai_chat = ai_chat
-
-@app.post("/api/ai/chat", response_model=ChatResponse, name="ai_chat_v2")
+@app.post("/api/ai/chat", response_model=ChatResponse)
 async def ai_chat_v2(req: ChatRequest, db: AsyncSession = Depends(get_db), agency: Agency = Depends(_get_current_agency)):
     # Override the provider based on config
     config = _load_ai_config()
@@ -658,8 +612,6 @@ DATOS DISPONIBLES:
     except Exception as e:
         return ChatResponse(response=f"Error: {str(e)[:200]}", status="error", remaining_requests=remaining)
 
-# Remove the original duplicated route
-app.routes = [r for r in app.routes if not (hasattr(r, 'name') and r.name == 'ai_chat')]
 
 
 # ---------------------------------------------------------------------------
