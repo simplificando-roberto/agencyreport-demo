@@ -617,6 +617,8 @@ def _create_pty_session(session_id: str, command: str) -> dict:
         os.dup2(slave_fd, 1)
         os.dup2(slave_fd, 2)
         os.close(slave_fd)
+        os.environ["TERM"] = "dumb"
+        os.environ["NO_COLOR"] = "1"
         os.execvp("bash", ["bash", "-c", command])
     os.close(slave_fd)
     # Non-blocking reads
@@ -645,6 +647,22 @@ async def terminal_start(command: str = "claude login", _agency: Agency = Depend
     return {"session_id": session_id, "command": command}
 
 
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences from terminal output."""
+    import re
+    # Remove all ANSI escape sequences: ESC[ ... letter, ESC] ... BEL, ESC( ...
+    text = re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]', '', text)
+    text = re.sub(r'\x1b\][^\x07]*\x07', '', text)
+    text = re.sub(r'\x1b[()][A-Z0-9]', '', text)
+    text = re.sub(r'\x1b[>=<]', '', text)
+    text = re.sub(r'\x1b\[[\?]?[0-9;]*[hlm]', '', text)
+    # Remove carriage returns (keep newlines)
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    # Remove null bytes
+    text = text.replace('\x00', '')
+    return text
+
+
 @app.get("/api/ai/terminal/read")
 async def terminal_read(session_id: str, _agency: Agency = Depends(_get_current_agency)):
     """Read new output from the PTY session."""
@@ -653,7 +671,7 @@ async def terminal_read(session_id: str, _agency: Agency = Depends(_get_current_
         return {"output": "", "alive": False}
     try:
         data = os.read(session["master_fd"], 8192)
-        text = data.decode("utf-8", errors="replace")
+        text = _strip_ansi(data.decode("utf-8", errors="replace"))
     except (OSError, BlockingIOError):
         text = ""
     # Check if process is still running
