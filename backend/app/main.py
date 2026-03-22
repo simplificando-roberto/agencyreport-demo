@@ -58,7 +58,7 @@ async def _get_clients_summary(db: AsyncSession, agency_id) -> list[dict]:
     clients_r = await db.execute(select(Client).where(Client.agency_id == agency_id))
     clients = clients_r.scalars().all()
     result = []
-    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    cutoff = datetime.utcnow() - timedelta(days=30)
     for c in clients:
         metrics_r = await db.execute(
             select(Metric).where(Metric.client_id == c.id, Metric.date >= cutoff)
@@ -179,7 +179,7 @@ class ChatResponse(BaseModel):
 # Auth
 # ---------------------------------------------------------------------------
 def _create_token(agency_id: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     return jwt.encode({"sub": agency_id, "exp": expire}, SECRET_KEY, algorithm=ALGORITHM)
 
 async def _get_current_agency(request: Request, db: AsyncSession = Depends(get_db)) -> Agency:
@@ -250,7 +250,7 @@ async def list_clients(db: AsyncSession = Depends(get_db), agency: Agency = Depe
 
 @app.get("/api/clients/{client_id}/metrics", response_model=list[MetricOut])
 async def client_metrics(client_id: str, period: int = 30, channel: str | None = None, db: AsyncSession = Depends(get_db), _agency: Agency = Depends(_get_current_agency)):
-    cutoff = datetime.now(timezone.utc) - timedelta(days=period)
+    cutoff = datetime.utcnow() - timedelta(days=period)
     query = select(Metric).where(Metric.client_id == UUID(client_id), Metric.date >= cutoff).order_by(Metric.date)
     if channel:
         query = query.where(Metric.channel == channel)
@@ -259,7 +259,7 @@ async def client_metrics(client_id: str, period: int = 30, channel: str | None =
 
 @app.get("/api/clients/{client_id}/metrics/csv")
 async def export_metrics_csv(client_id: str, period: int = 90, db: AsyncSession = Depends(get_db), _agency: Agency = Depends(_get_current_agency)):
-    cutoff = datetime.now(timezone.utc) - timedelta(days=period)
+    cutoff = datetime.utcnow() - timedelta(days=period)
     result = await db.execute(select(Metric).where(Metric.client_id == UUID(client_id), Metric.date >= cutoff).order_by(Metric.date))
     metrics = result.scalars().all()
     buf = io.StringIO()
@@ -275,7 +275,7 @@ async def export_metrics_csv(client_id: str, period: int = 90, db: AsyncSession 
 # ---------------------------------------------------------------------------
 @app.post("/api/reports/generate", response_model=ReportOut)
 async def generate_report(req: ReportRequest, db: AsyncSession = Depends(get_db), agency: Agency = Depends(_get_current_agency)):
-    n = datetime.now(timezone.utc)
+    n = datetime.utcnow()
     client_r = await db.execute(select(Client).where(Client.id == UUID(req.client_id)))
     client = client_r.scalar_one_or_none()
     if not client:
@@ -386,7 +386,7 @@ async def ai_chat(req: ChatRequest, db: AsyncSession = Depends(get_db), agency: 
     if req.client_id:
         client_r = await db.execute(select(Client).where(Client.id == UUID(req.client_id)))
         client = client_r.scalar_one_or_none()
-        cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+        cutoff = datetime.utcnow() - timedelta(days=30)
         metrics_r = await db.execute(select(Metric).where(Metric.client_id == UUID(req.client_id), Metric.date >= cutoff).order_by(Metric.date.desc()).limit(30))
         metrics = metrics_r.scalars().all()
         context = f"Cliente: {client.name} ({client.industry})\nCanales: {', '.join(client.channels.keys())}\nMetricas ultimos 30 dias:\n"
