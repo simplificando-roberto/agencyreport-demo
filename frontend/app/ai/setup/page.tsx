@@ -47,14 +47,26 @@ export default function AISetupPage() {
     let term: any = null;
     let ws: WebSocket | null = null;
 
+    const loadScript = (src: string) => new Promise<void>((resolve, reject) => {
+      if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
+      const s = document.createElement("script");
+      s.src = src; s.onload = () => resolve(); s.onerror = reject;
+      document.head.appendChild(s);
+    });
+
     const init = async () => {
-      const { Terminal } = await import("@xterm/xterm");
-      const { FitAddon } = await import("@xterm/addon-fit");
-      // Load CSS
+      // Load xterm.js from CDN (not available in Next.js standalone node_modules)
       const link = document.createElement("link");
       link.rel = "stylesheet";
       link.href = "https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css";
       document.head.appendChild(link);
+
+      await loadScript("https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js");
+      await loadScript("https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js");
+
+      const Terminal = (window as any).Terminal;
+      const FitAddon = (window as any).FitAddon;
+      if (!Terminal) { console.error("xterm.js not loaded"); return; }
 
       term = new Terminal({
         cursorBlink: true,
@@ -69,10 +81,8 @@ export default function AISetupPage() {
       termInstance.current = term;
 
       // Connect WebSocket
-      // WebSocket connects directly to the backend (port 8443 for WSS, 8000 for WS)
-      const wsPort = window.location.protocol === "https:" ? "8443" : "8000";
-      const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-      ws = new WebSocket(`${proto}//${window.location.hostname}:${wsPort}/api/ai/terminal`);
+      // WebSocket connects directly to backend on port 9000 (bypasses nginx)
+      ws = new WebSocket(`ws://${window.location.hostname}:9000/api/ai/terminal`);
       wsRef.current = ws;
 
       ws.onopen = () => {
