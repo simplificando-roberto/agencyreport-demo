@@ -2,7 +2,6 @@
 
 import asyncio
 import csv
-import fcntl
 import hashlib
 import io
 import json
@@ -602,8 +601,6 @@ DATOS DISPONIBLES:
 
 import os
 import pty
-import select
-import struct
 import termios
 from fastapi import WebSocket, WebSocketDisconnect
 
