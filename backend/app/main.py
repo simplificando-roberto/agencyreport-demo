@@ -436,139 +436,62 @@ async def ai_setup_status(_agency: Agency = Depends(_get_current_agency)):
     return {
         "default_provider": config.get("default_provider", "claude"),
         "providers": {
-            "claude": {**claude_status, "name": "Claude Code", "login_method": "OAuth (abre URL en navegador)"},
-            "codex": {**codex_status, "name": "Codex (OpenAI)", "login_method": "Device auth (codigo + URL)"},
+            "claude": {**claude_status, "name": "Claude Code", "login_method": "Token de sesion (desde claude.ai/settings)",
+                       "token_url": "https://claude.ai/settings", "token_help": "Ve a claude.ai/settings > 'Claude Code' > genera un token y pegalo aqui"},
+            "codex": {**codex_status, "name": "Codex (OpenAI)", "login_method": "API Key (desde platform.openai.com)",
+                      "token_url": "https://platform.openai.com/api-keys", "token_help": "Ve a platform.openai.com > API Keys > crea una key y pegala aqui"},
         },
     }
 
 
+class TokenInput(BaseModel):
+    token: str
+
+
 @app.post("/api/ai/setup/login")
-async def ai_setup_login(provider: str = "claude", _agency: Agency = Depends(_get_current_agency)):
-    """Start login process for a provider. Returns URL/code for the user to complete."""
-    if provider in _login_processes:
-        # Kill any existing login process
-        try:
-            _login_processes[provider].kill()
-        except Exception:
-            pass
-        del _login_processes[provider]
+async def ai_setup_login(req: TokenInput, provider: str = "claude", _agency: Agency = Depends(_get_current_agency)):
+    """Authenticate a provider using a token.
+
+    - Claude: use 'claude setup-token' (paste token from claude.ai/settings)
+    - Codex: use 'codex login --with-api-key' (paste OpenAI API key)
+    """
+    token_val = req.token.strip()
+    if not token_val:
+        raise HTTPException(400, "Token vacio")
 
     try:
         if provider == "claude":
             proc = await asyncio.create_subprocess_exec(
-                "claude", "auth", "login", "--claudeai",
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                stdin=asyncio.subprocess.PIPE)
+                "claude", "setup-token",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(input=f"{token_val}\n".encode()), timeout=15)
         elif provider == "codex":
             proc = await asyncio.create_subprocess_exec(
-                "codex", "login", "--device-auth",
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                stdin=asyncio.subprocess.PIPE)
+                "codex", "login", "--with-api-key",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(input=f"{token_val}\n".encode()), timeout=15)
         else:
             raise HTTPException(400, f"Proveedor desconocido: {provider}")
 
-        _login_processes[provider] = proc
+        output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
+        log.info("Login %s output: %s", provider, output[:200])
 
-        # Read output for ~10 seconds to capture the URL/code
-        output_lines = []
-        try:
-            for _ in range(20):
-                await asyncio.sleep(0.5)
-                if proc.stdout and proc.stdout._buffer:  # type: ignore
-                    data = await asyncio.wait_for(proc.stdout.read(4096), timeout=1)
-                    if data:
-                        output_lines.append(data.decode("utf-8", errors="replace"))
-                if proc.stderr and proc.stderr._buffer:  # type: ignore
-                    data = await asyncio.wait_for(proc.stderr.read(4096), timeout=1)
-                    if data:
-                        output_lines.append(data.decode("utf-8", errors="replace"))
-                if proc.returncode is not None:
-                    break
-        except (asyncio.TimeoutError, Exception):
-            pass
-
-        full_output = "\n".join(output_lines)
-
-        # Extract URL from output
-        import re
-        urls = re.findall(r'https?://[^\s\)\"\']+', full_output)
-        login_url = urls[0] if urls else ""
-
-        # Extract device code if present
-        codes = re.findall(r'code[:\s]+([A-Z0-9-]{4,})', full_output, re.IGNORECASE)
-        device_code = codes[0] if codes else ""
-
-        needs_code = provider == "claude"  # Claude OAuth returns a code to paste back
-
-        return {
-            "status": "login_started",
-            "provider": provider,
-            "login_url": login_url,
-            "device_code": device_code,
-            "needs_code_input": needs_code,
-            "raw_output": full_output,
-            "instructions": (
-                "1. Abre la URL en tu navegador\n"
-                "2. Autoriza con tu cuenta\n"
-                + ("3. Copia el codigo que te da la pagina y pegalo aqui abajo\n" if needs_code else "3. Vuelve aqui y pulsa 'Verificar'\n")
-            ),
-        }
-    except FileNotFoundError:
-        raise HTTPException(400, f"{provider} CLI no esta instalado en el servidor")
-
-
-class CodeInput(BaseModel):
-    code: str
-
-@app.post("/api/ai/setup/code")
-async def ai_setup_send_code(req: CodeInput, provider: str = "claude", _agency: Agency = Depends(_get_current_agency)):
-    """Send the OAuth code back to the waiting CLI process."""
-    proc = _login_processes.get(provider)
-
-    # If process died, restart it and send code immediately
-    if not proc or proc.returncode is not None:
-        log.info("Login process expired, restarting for code input...")
-        try:
-            if provider == "claude":
-                proc = await asyncio.create_subprocess_exec(
-                    "claude", "auth", "login", "--claudeai",
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                    stdin=asyncio.subprocess.PIPE)
-            elif provider == "codex":
-                proc = await asyncio.create_subprocess_exec(
-                    "codex", "login", "--device-auth",
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                    stdin=asyncio.subprocess.PIPE)
-            else:
-                raise HTTPException(400, f"Proveedor desconocido: {provider}")
-            _login_processes[provider] = proc
-            # Wait for it to be ready for input
-            await asyncio.sleep(2)
-        except FileNotFoundError:
-            raise HTTPException(400, f"{provider} CLI no esta instalado")
-
-    try:
-        if proc.stdin:
-            proc.stdin.write(f"{req.code.strip()}\n".encode())
-            await proc.stdin.drain()
-        # Wait for the process to complete auth
-        await asyncio.sleep(5)
-        # Check if auth succeeded
+        # Verify auth
+        await asyncio.sleep(1)
         status = await _check_cli_status(provider)
-        # Cleanup
-        if provider in _login_processes:
-            try:
-                _login_processes[provider].kill()
-            except Exception:
-                pass
-            del _login_processes[provider]
         return {
             "provider": provider,
             "authenticated": status["authenticated"],
-            "message": "Autenticado correctamente!" if status["authenticated"] else "Codigo no valido o expirado. Intenta de nuevo.",
+            "message": "Autenticado correctamente!" if status["authenticated"] else f"No se pudo autenticar. Verifica el token. Output: {output[:200]}",
         }
-    except Exception as e:
-        return {"provider": provider, "authenticated": False, "message": f"Error: {str(e)[:200]}"}
+    except asyncio.TimeoutError:
+        return {"provider": provider, "authenticated": False, "message": "Timeout al autenticar"}
+    except FileNotFoundError:
+        raise HTTPException(400, f"{provider} CLI no esta instalado en el servidor")
 
 
 @app.post("/api/ai/setup/verify")
