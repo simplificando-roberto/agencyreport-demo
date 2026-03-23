@@ -1,4 +1,4 @@
-"""AgencyReport v3 - Reporting automatizado con Asistente IA y Excel/PDF."""
+"""AgencyReport v4 - Hardened security."""
 
 import asyncio
 import csv
@@ -10,13 +10,12 @@ import os
 import secrets
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from time import time as now
 from uuid import UUID
 
-from fastapi import FastAPI, Depends, HTTPException, Request, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Depends, HTTPException, Request, UploadFile, File, Response
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from jose import jwt, JWTError
@@ -24,7 +23,10 @@ from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
+from app.core.config import (
+    SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES,
+    COOKIE_NAME, COOKIE_SECURE, COOKIE_HTTPONLY, COOKIE_SAMESITE,
+)
 from app.core.database import Base, engine, get_db, SessionLocal
 from app.models import Agency, Client, Metric, Alert, Report
 from app.services.mock_data import DEMO_CLIENTS, generate_metrics
@@ -32,50 +34,37 @@ from app.services.mock_data import DEMO_CLIENTS, generate_metrics
 log = logging.getLogger("agencyreport")
 logging.basicConfig(level=logging.INFO)
 
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
+
 # ---------------------------------------------------------------------------
 # Rate limiter
 # ---------------------------------------------------------------------------
 _rate_limits: dict[str, list[float]] = defaultdict(list)
-RATE_LIMIT_AI = 10
 
-def _check_rate_limit(key: str) -> tuple[bool, int]:
-    cutoff = now() - 3600
+def _check_rate_limit(key: str, max_requests: int = 10, window: int = 3600) -> tuple[bool, int]:
+    cutoff = now() - window
     _rate_limits[key] = [t for t in _rate_limits[key] if t > cutoff]
-    remaining = RATE_LIMIT_AI - len(_rate_limits[key])
+    remaining = max_requests - len(_rate_limits[key])
     if remaining <= 0:
         return False, 0
     _rate_limits[key].append(now())
     return True, remaining - 1
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Password hashing (PBKDF2 with salt - stdlib, no deps)
 # ---------------------------------------------------------------------------
 def _hash_password(pw: str) -> str:
-    return hashlib.sha256(pw.encode()).hexdigest()
+    salt = os.urandom(16)
+    h = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt, 100_000)
+    return salt.hex() + ":" + h.hex()
 
-async def _get_clients_summary(db: AsyncSession, agency_id) -> list[dict]:
-    """Get summary of all clients with latest metrics for AI context."""
-    clients_r = await db.execute(select(Client).where(Client.agency_id == agency_id))
-    clients = clients_r.scalars().all()
-    result = []
-    cutoff = datetime.utcnow() - timedelta(days=30)
-    for c in clients:
-        metrics_r = await db.execute(
-            select(Metric).where(Metric.client_id == c.id, Metric.date >= cutoff)
-            .order_by(Metric.date.desc()).limit(50)
-        )
-        metrics = metrics_r.scalars().all()
-        summary = {}
-        for m in metrics:
-            key = f"{m.channel}/{m.metric_name}"
-            if key not in summary:
-                summary[key] = {"latest": m.value, "channel": m.channel, "metric": m.metric_name}
-        result.append({
-            "name": c.name, "industry": c.industry,
-            "channels": list(c.channels.keys()),
-            "metrics_last_30d": list(summary.values())[:15],
-        })
-    return result
+def _verify_password(pw: str, stored: str) -> bool:
+    if ":" not in stored:
+        # Legacy SHA256 (migration path)
+        return hashlib.sha256(pw.encode()).hexdigest() == stored
+    salt_hex, hash_hex = stored.split(":", 1)
+    h = hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(salt_hex), 100_000)
+    return h.hex() == hash_hex
 
 # ---------------------------------------------------------------------------
 # Seed
@@ -85,7 +74,7 @@ async def _seed_demo(db: AsyncSession):
     if result.scalar():
         return
     admin_pw = os.environ.get("ADMIN_PASSWORD", "") or secrets.token_urlsafe(12)
-    log.warning("Admin creado: email=admin@agency.test password=%s", admin_pw)
+    log.info("Admin account created: admin@agency.test (check ADMIN_PASSWORD env var)")
     agency = Agency(name="Demo Agency", email="admin@agency.test", password_hash=_hash_password(admin_pw), brand_color="#2563eb")
     db.add(agency)
     await db.flush()
@@ -95,21 +84,34 @@ async def _seed_demo(db: AsyncSession):
         await db.flush()
         for m in generate_metrics(cd["channels"], days=90, client_index=i):
             db.add(Metric(client_id=client.id, **m))
-        # One client with triggered alert
         ch = next(iter(cd["channels"]))
         db.add(Alert(client_id=client.id, channel=ch, metric_name="engagement_rate" if "instagram" in cd["channels"] else "clicks", threshold=2.0, condition="below", triggered=(i == 2)))
     await db.commit()
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async with SessionLocal() as db:
         await _seed_demo(db)
     yield
 
-app = FastAPI(title="AgencyReport", version="0.3.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="AgencyReport", version="0.4.0", lifespan=lifespan)
+
+# No CORS needed - same origin (frontend served by same server)
+# If needed in future, restrict to specific origins
+
+# ---------------------------------------------------------------------------
+# Security headers middleware
+# ---------------------------------------------------------------------------
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    return response
 
 # ---------------------------------------------------------------------------
 # Schemas
@@ -118,8 +120,7 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
-class TokenResponse(BaseModel):
-    access_token: str
+class LoginResponse(BaseModel):
     agency_name: str
     agency_id: str
 
@@ -175,24 +176,38 @@ class ChatResponse(BaseModel):
     status: str
     remaining_requests: int
 
+class TokenInput(BaseModel):
+    token: str
+
 # ---------------------------------------------------------------------------
-# Auth
+# Auth (cookie-based)
 # ---------------------------------------------------------------------------
 def _create_token(agency_id: str) -> str:
     expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     return jwt.encode({"sub": agency_id, "exp": expire}, SECRET_KEY, algorithm=ALGORITHM)
 
+def _set_auth_cookie(response: Response, token: str):
+    response.set_cookie(
+        COOKIE_NAME, token,
+        httponly=COOKIE_HTTPONLY, secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE, path="/",
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+
+def _clear_auth_cookie(response: Response):
+    response.delete_cookie(COOKIE_NAME, path="/")
+
 async def _get_current_agency(request: Request, db: AsyncSession = Depends(get_db)) -> Agency:
-    auth = request.headers.get("Authorization", "")
-    # Also accept token as query param (for file downloads via window.open)
-    if not auth.startswith("Bearer "):
-        token_param = request.query_params.get("token", "")
-        if token_param:
-            auth = f"Bearer {token_param}"
-        else:
-            raise HTTPException(401, "Token requerido")
+    token = request.cookies.get(COOKIE_NAME, "")
+    if not token:
+        # Fallback to Authorization header (for API clients)
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth[7:]
+    if not token:
+        raise HTTPException(401, "Autenticacion requerida")
     try:
-        payload = jwt.decode(auth[7:], SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         agency_id = payload.get("sub")
         if not agency_id:
             raise HTTPException(401, "Token invalido")
@@ -209,15 +224,33 @@ async def _get_current_agency(request: Request, db: AsyncSession = Depends(get_d
 # ---------------------------------------------------------------------------
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "agencyreport", "version": "0.3.0"}
+    return {"status": "ok"}
 
-@app.post("/api/auth/login", response_model=TokenResponse)
-async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
+@app.post("/api/auth/login", response_model=LoginResponse)
+async def login(req: LoginRequest, response: Response, request: Request, db: AsyncSession = Depends(get_db)):
+    # Rate limit: 5 attempts per minute per IP
+    client_ip = request.client.host if request.client else "unknown"
+    allowed, _ = _check_rate_limit(f"login:{client_ip}", max_requests=5, window=60)
+    if not allowed:
+        raise HTTPException(429, "Demasiados intentos. Espera un minuto.")
+
     result = await db.execute(select(Agency).where(Agency.email == req.email))
     agency = result.scalar_one_or_none()
-    if not agency or agency.password_hash != _hash_password(req.password):
+    if not agency or not _verify_password(req.password, agency.password_hash):
         raise HTTPException(401, "Credenciales invalidas")
-    return TokenResponse(access_token=_create_token(str(agency.id)), agency_name=agency.name, agency_id=str(agency.id))
+
+    token = _create_token(str(agency.id))
+    _set_auth_cookie(response, token)
+    return LoginResponse(agency_name=agency.name, agency_id=str(agency.id))
+
+@app.post("/api/auth/logout")
+async def logout(response: Response):
+    _clear_auth_cookie(response)
+    return {"status": "ok"}
+
+@app.get("/api/auth/me")
+async def auth_me(agency: Agency = Depends(_get_current_agency)):
+    return {"agency_name": agency.name, "agency_id": str(agency.id)}
 
 # ---------------------------------------------------------------------------
 # Dashboard
@@ -227,12 +260,7 @@ async def dashboard_overview(db: AsyncSession = Depends(get_db), agency: Agency 
     clients_r = await db.execute(select(Client).where(Client.agency_id == agency.id))
     clients = clients_r.scalars().all()
     alerts_r = await db.execute(select(func.count()).select_from(Alert).join(Client).where(Client.agency_id == agency.id, Alert.triggered == True))
-    # Recent triggered alerts
-    recent_r = await db.execute(
-        select(Alert, Client.name).join(Client)
-        .where(Client.agency_id == agency.id, Alert.triggered == True)
-        .order_by(Alert.created_at.desc()).limit(3)
-    )
+    recent_r = await db.execute(select(Alert, Client.name).join(Client).where(Client.agency_id == agency.id, Alert.triggered == True).order_by(Alert.created_at.desc()).limit(3))
     recent_alerts = [{"client": cn, "channel": a.channel, "metric": a.metric_name, "threshold": a.threshold} for a, cn in recent_r.all()]
     return DashboardOverview(
         total_clients=len(clients), active_alerts=alerts_r.scalar() or 0, total_metrics_today=len(clients) * 5,
@@ -249,8 +277,8 @@ async def list_clients(db: AsyncSession = Depends(get_db), agency: Agency = Depe
     return [ClientOut(id=str(c.id), name=c.name, industry=c.industry, channels=c.channels, created_at=c.created_at) for c in result.scalars().all()]
 
 @app.get("/api/clients/{client_id}/metrics", response_model=list[MetricOut])
-async def client_metrics(client_id: str, period: int = 30, channel: str | None = None, db: AsyncSession = Depends(get_db), _agency: Agency = Depends(_get_current_agency)):
-    cutoff = datetime.utcnow() - timedelta(days=period)
+async def client_metrics(client_id: str, period: int = 30, channel: str | None = None, db: AsyncSession = Depends(get_db), _a: Agency = Depends(_get_current_agency)):
+    cutoff = datetime.utcnow() - timedelta(days=min(period, 365))
     query = select(Metric).where(Metric.client_id == UUID(client_id), Metric.date >= cutoff).order_by(Metric.date)
     if channel:
         query = query.where(Metric.channel == channel)
@@ -258,14 +286,13 @@ async def client_metrics(client_id: str, period: int = 30, channel: str | None =
     return [MetricOut(channel=m.channel, metric_name=m.metric_name, value=m.value, date=m.date) for m in result.scalars().all()]
 
 @app.get("/api/clients/{client_id}/metrics/csv")
-async def export_metrics_csv(client_id: str, period: int = 90, db: AsyncSession = Depends(get_db), _agency: Agency = Depends(_get_current_agency)):
-    cutoff = datetime.utcnow() - timedelta(days=period)
+async def export_metrics_csv(client_id: str, period: int = 90, db: AsyncSession = Depends(get_db), _a: Agency = Depends(_get_current_agency)):
+    cutoff = datetime.utcnow() - timedelta(days=min(period, 365))
     result = await db.execute(select(Metric).where(Metric.client_id == UUID(client_id), Metric.date >= cutoff).order_by(Metric.date))
-    metrics = result.scalars().all()
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["fecha", "canal", "metrica", "valor"])
-    for m in metrics:
+    for m in result.scalars().all():
         writer.writerow([m.date.strftime("%Y-%m-%d"), m.channel, m.metric_name, m.value])
     buf.seek(0)
     return StreamingResponse(io.BytesIO(buf.getvalue().encode("utf-8-sig")), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename=metricas_{client_id[:8]}.csv"})
@@ -282,8 +309,7 @@ async def generate_report(req: ReportRequest, db: AsyncSession = Depends(get_db)
         raise HTTPException(404, "Cliente no encontrado")
     channels = req.channels or list(client.channels.keys())
     ai_summary = (f"Resumen ejecutivo de {client.name} ({client.industry}) - Ultimos {req.period_days} dias:\n\n"
-                  f"Los canales {', '.join(channels)} muestran una tendencia positiva con crecimiento sostenido. "
-                  f"Se recomienda aumentar la inversion en los canales con mejor coste por conversion.")
+                  f"Los canales {', '.join(channels)} muestran una tendencia positiva con crecimiento sostenido.")
     report = Report(client_id=client.id, agency_id=agency.id, title=f"Reporte {client.name} - {n.strftime('%B %Y')}", period_start=n - timedelta(days=req.period_days), period_end=n, ai_summary=ai_summary, channels=channels)
     db.add(report)
     await db.commit()
@@ -291,64 +317,70 @@ async def generate_report(req: ReportRequest, db: AsyncSession = Depends(get_db)
     return ReportOut(id=str(report.id), title=report.title, period_start=report.period_start, period_end=report.period_end, ai_summary=report.ai_summary, channels=report.channels, created_at=report.created_at)
 
 @app.get("/api/reports", response_model=list[ReportOut])
-async def list_reports(db: AsyncSession = Depends(get_db), agency: Agency = Depends(_get_current_agency)):
-    result = await db.execute(select(Report).where(Report.agency_id == agency.id).order_by(Report.created_at.desc()))
+async def list_reports(skip: int = 0, limit: int = 50, db: AsyncSession = Depends(get_db), agency: Agency = Depends(_get_current_agency)):
+    result = await db.execute(select(Report).where(Report.agency_id == agency.id).order_by(Report.created_at.desc()).offset(skip).limit(min(limit, 100)))
     return [ReportOut(id=str(r.id), title=r.title, period_start=r.period_start, period_end=r.period_end, ai_summary=r.ai_summary, channels=r.channels, created_at=r.created_at) for r in result.scalars().all()]
 
 @app.get("/api/reports/{report_id}/excel")
-async def download_report_excel(report_id: str, db: AsyncSession = Depends(get_db), _agency: Agency = Depends(_get_current_agency)):
+async def download_report_excel(report_id: str, db: AsyncSession = Depends(get_db), _a: Agency = Depends(_get_current_agency)):
     from openpyxl import Workbook
     report_r = await db.execute(select(Report).where(Report.id == UUID(report_id)))
     report = report_r.scalar_one_or_none()
     if not report:
         raise HTTPException(404, "Reporte no encontrado")
     metrics_r = await db.execute(select(Metric).where(Metric.client_id == report.client_id, Metric.date >= report.period_start, Metric.date <= report.period_end).order_by(Metric.date))
-    metrics = metrics_r.scalars().all()
     wb = Workbook()
     ws = wb.active
-    ws.title = "Metricas"
-    ws.append(["Fecha", "Canal", "Metrica", "Valor"])
-    for m in metrics:
-        ws.append([m.date.strftime("%Y-%m-%d"), m.channel, m.metric_name, m.value])
-    # Summary sheet
-    ws2 = wb.create_sheet("Resumen")
-    ws2.append(["Reporte", report.title])
-    ws2.append(["Periodo", f"{report.period_start.strftime('%Y-%m-%d')} a {report.period_end.strftime('%Y-%m-%d')}"])
-    ws2.append(["Canales", ", ".join(report.channels)])
-    ws2.append([])
-    ws2.append(["Resumen IA"])
-    ws2.append([report.ai_summary or ""])
+    if ws:
+        ws.title = "Metricas"
+        ws.append(["Fecha", "Canal", "Metrica", "Valor"])
+        for m in metrics_r.scalars().all():
+            ws.append([m.date.strftime("%Y-%m-%d"), m.channel, m.metric_name, m.value])
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
     return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f"attachment; filename=reporte_{report_id[:8]}.xlsx"})
 
 @app.post("/api/data/upload")
-async def upload_data(client_id: str, file: UploadFile = File(...), db: AsyncSession = Depends(get_db), _agency: Agency = Depends(_get_current_agency)):
-    """Upload Excel/CSV with metrics data. Expected columns: fecha, canal, metrica, valor"""
+async def upload_data(client_id: str, file: UploadFile = File(...), db: AsyncSession = Depends(get_db), _a: Agency = Depends(_get_current_agency)):
     content = await file.read()
+    if len(content) > MAX_UPLOAD_SIZE:
+        raise HTTPException(413, "Archivo demasiado grande (max 10MB)")
     rows_imported = 0
     if file.filename and file.filename.endswith((".xlsx", ".xls")):
         from openpyxl import load_workbook
         wb = load_workbook(io.BytesIO(content))
         ws = wb.active
+        if not ws:
+            raise HTTPException(400, "Excel vacio")
         headers = [str(c.value or "").lower().strip() for c in ws[1]]
+        if "fecha" not in headers or "valor" not in headers:
+            raise HTTPException(400, "Columnas requeridas: fecha, valor")
         for row in ws.iter_rows(min_row=2, values_only=True):
             data = dict(zip(headers, row))
             if not data.get("fecha") or not data.get("valor"):
                 continue
-            date_val = data["fecha"] if isinstance(data["fecha"], datetime) else datetime.strptime(str(data["fecha"])[:10], "%Y-%m-%d")
-            db.add(Metric(client_id=UUID(client_id), channel=str(data.get("canal", "manual")), metric_name=str(data.get("metrica", "valor")), value=float(data["valor"]), date=date_val))
+            try:
+                date_val = data["fecha"] if isinstance(data["fecha"], datetime) else datetime.strptime(str(data["fecha"])[:10], "%Y-%m-%d")
+                val = float(data["valor"])
+            except (ValueError, TypeError):
+                continue
+            db.add(Metric(client_id=UUID(client_id), channel=str(data.get("canal", "manual"))[:50], metric_name=str(data.get("metrica", "valor"))[:100], value=val, date=date_val))
             rows_imported += 1
-    else:  # CSV
+    else:
         text = content.decode("utf-8-sig")
         reader = csv.DictReader(io.StringIO(text))
         for row in reader:
-            date_str = row.get("fecha", "") or row.get("date", "")
+            date_str = (row.get("fecha", "") or row.get("date", ""))[:10]
             value_str = row.get("valor", "") or row.get("value", "")
             if not date_str or not value_str:
                 continue
-            db.add(Metric(client_id=UUID(client_id), channel=row.get("canal", "") or row.get("channel", "manual"), metric_name=row.get("metrica", "") or row.get("metric", "valor"), value=float(value_str), date=datetime.strptime(date_str[:10], "%Y-%m-%d")))
+            try:
+                val = float(value_str)
+                date_val = datetime.strptime(date_str, "%Y-%m-%d")
+            except (ValueError, TypeError):
+                continue
+            db.add(Metric(client_id=UUID(client_id), channel=str(row.get("canal", "") or row.get("channel", "manual"))[:50], metric_name=str(row.get("metrica", "") or row.get("metric", "valor"))[:100], value=val, date=date_val))
             rows_imported += 1
     await db.commit()
     return {"status": "ok", "rows_imported": rows_imported}
@@ -362,28 +394,9 @@ async def list_alerts(db: AsyncSession = Depends(get_db), agency: Agency = Depen
     return [AlertOut(id=str(a.id), client_name=cn, channel=a.channel, metric_name=a.metric_name, threshold=a.threshold, condition=a.condition, triggered=a.triggered) for a, cn in result.all()]
 
 # ---------------------------------------------------------------------------
-# AI Chat
+# AI Setup
 # ---------------------------------------------------------------------------
-@app.get("/api/ai/suggestions")
-async def ai_suggestions(client_id: str | None = None):
-    base = [
-        "Como ha sido el rendimiento general este mes?",
-        "Que canal tiene mejor ROI?",
-        "Genera un resumen ejecutivo para enviar al cliente",
-        "Que mejoras recomiendas para las campanas?",
-    ]
-    if client_id:
-        return {"suggestions": base + ["Compara el ultimo mes con el anterior", "Que metricas estan por debajo del objetivo?"]}
-    return {"suggestions": base}
-
-
-# ---------------------------------------------------------------------------
-# AI Setup (login/config)
-# ---------------------------------------------------------------------------
-
-# Persistent config on disk
-_AI_CONFIG_PATH = Path("/app/config/ai_config.json") if Path("/app/config").is_dir() else Path("/app/ai_config.json")
-_login_processes: dict[str, asyncio.subprocess.Process] = {}
+_AI_CONFIG_PATH = Path("/app/config/ai_config.json") if Path("/app/config").is_dir() else Path("/tmp/ai_config.json")
 
 def _load_ai_config() -> dict:
     if _AI_CONFIG_PATH.exists():
@@ -393,212 +406,155 @@ def _load_ai_config() -> dict:
 def _save_ai_config(cfg: dict):
     _AI_CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
 
-
 async def _check_cli_status(cli: str) -> dict:
-    """Check if a CLI is installed and authenticated."""
     result = {"installed": False, "authenticated": False, "version": ""}
     try:
-        proc = await asyncio.create_subprocess_exec(
-            cli, "--version", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        proc = await asyncio.create_subprocess_exec(cli, "--version", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
         if proc.returncode == 0:
             result["installed"] = True
             result["version"] = stdout.decode().strip()
     except (FileNotFoundError, asyncio.TimeoutError):
         return result
-
-    # Check auth
     try:
         if cli == "claude":
-            proc = await asyncio.create_subprocess_exec(
-                "claude", "auth", "status", "--json",
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            proc = await asyncio.create_subprocess_exec("claude", "auth", "status", "--json", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
             data = json.loads(stdout.decode())
             result["authenticated"] = data.get("loggedIn", False)
         elif cli == "codex":
-            proc = await asyncio.create_subprocess_exec(
-                "codex", "login", "status",
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            proc = await asyncio.create_subprocess_exec("codex", "login", "status", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
             result["authenticated"] = proc.returncode == 0 and "logged in" in stdout.decode().lower()
     except Exception:
         pass
     return result
 
-
 @app.get("/api/ai/setup/status")
-async def ai_setup_status(_agency: Agency = Depends(_get_current_agency)):
-    """Get status of all AI providers."""
+async def ai_setup_status(_a: Agency = Depends(_get_current_agency)):
     claude_status = await _check_cli_status("claude")
     codex_status = await _check_cli_status("codex")
     config = _load_ai_config()
     return {
         "default_provider": config.get("default_provider", "claude"),
         "providers": {
-            "claude": {**claude_status, "name": "Claude Code", "login_method": "Token de sesion (desde claude.ai/settings)",
-                       "token_url": "https://claude.ai/settings", "token_help": "Ve a claude.ai/settings > 'Claude Code' > genera un token y pegalo aqui"},
-            "codex": {**codex_status, "name": "Codex (OpenAI)", "login_method": "API Key (desde platform.openai.com)",
-                      "token_url": "https://platform.openai.com/api-keys", "token_help": "Ve a platform.openai.com > API Keys > crea una key y pegala aqui"},
+            "claude": {**claude_status, "name": "Claude Code"},
+            "codex": {**codex_status, "name": "Codex (OpenAI)"},
         },
     }
 
-
-class TokenInput(BaseModel):
-    token: str
-
-
 @app.post("/api/ai/setup/login")
-async def ai_setup_login(req: TokenInput, provider: str = "claude", _agency: Agency = Depends(_get_current_agency)):
-    """Authenticate a provider using a token.
-
-    - Claude: use 'claude setup-token' (paste token from claude.ai/settings)
-    - Codex: use 'codex login --with-api-key' (paste OpenAI API key)
-    """
+async def ai_setup_login(req: TokenInput, provider: str = "claude", _a: Agency = Depends(_get_current_agency)):
     token_val = req.token.strip()
-    if not token_val:
-        raise HTTPException(400, "Token vacio")
-
+    if not token_val or len(token_val) < 10 or len(token_val) > 500:
+        raise HTTPException(400, "Token invalido")
     try:
         if provider == "claude":
-            proc = await asyncio.create_subprocess_exec(
-                "claude", "setup-token",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE)
-            stdout, stderr = await asyncio.wait_for(proc.communicate(input=f"{token_val}\n".encode()), timeout=15)
+            proc = await asyncio.create_subprocess_exec("claude", "setup-token", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         elif provider == "codex":
-            proc = await asyncio.create_subprocess_exec(
-                "codex", "login", "--with-api-key",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE)
-            stdout, stderr = await asyncio.wait_for(proc.communicate(input=f"{token_val}\n".encode()), timeout=15)
+            proc = await asyncio.create_subprocess_exec("codex", "login", "--with-api-key", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         else:
-            raise HTTPException(400, f"Proveedor desconocido: {provider}")
-
-        output = stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")
-        log.info("Login %s output: %s", provider, output[:200])
-
-        # Verify auth
+            raise HTTPException(400, "Proveedor desconocido")
+        await asyncio.wait_for(proc.communicate(input=f"{token_val}\n".encode()), timeout=15)
         await asyncio.sleep(1)
         status = await _check_cli_status(provider)
-        return {
-            "provider": provider,
-            "authenticated": status["authenticated"],
-            "message": "Autenticado correctamente!" if status["authenticated"] else f"No se pudo autenticar. Verifica el token. Output: {output[:200]}",
-        }
-    except asyncio.TimeoutError:
-        return {"provider": provider, "authenticated": False, "message": "Timeout al autenticar"}
+        return {"provider": provider, "authenticated": status["authenticated"], "message": "Conectado!" if status["authenticated"] else "Token no valido"}
     except FileNotFoundError:
-        raise HTTPException(400, f"{provider} CLI no esta instalado en el servidor")
-
+        raise HTTPException(400, f"{provider} no instalado")
 
 @app.post("/api/ai/setup/verify")
-async def ai_setup_verify(provider: str = "claude", _agency: Agency = Depends(_get_current_agency)):
-    """Check if login completed successfully."""
+async def ai_setup_verify(provider: str = "claude", _a: Agency = Depends(_get_current_agency)):
     status = await _check_cli_status(provider)
-    if provider in _login_processes:
-        try:
-            _login_processes[provider].kill()
-        except Exception:
-            pass
-        del _login_processes[provider]
-    return {"provider": provider, "authenticated": status["authenticated"], "version": status["version"]}
-
+    return {"provider": provider, "authenticated": status["authenticated"]}
 
 @app.post("/api/ai/setup/default")
-async def ai_setup_set_default(provider: str = "claude", _agency: Agency = Depends(_get_current_agency)):
-    """Set the default AI provider."""
+async def ai_setup_set_default(provider: str = "claude", _a: Agency = Depends(_get_current_agency)):
     config = _load_ai_config()
     config["default_provider"] = provider
     _save_ai_config(config)
     return {"default_provider": provider}
 
-
 @app.post("/api/ai/setup/logout")
-async def ai_setup_logout(provider: str = "claude", _agency: Agency = Depends(_get_current_agency)):
-    """Logout from a provider (removes credentials from server)."""
+async def ai_setup_logout(provider: str = "claude", _a: Agency = Depends(_get_current_agency)):
     try:
         if provider == "claude":
             proc = await asyncio.create_subprocess_exec("claude", "auth", "logout", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        elif provider == "codex":
-            proc = await asyncio.create_subprocess_exec("codex", "login", "--with-api-key", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            proc.stdin.write(b"\n")  # Empty key = logout
-            proc.stdin.close()
-        else:
-            raise HTTPException(400, f"Proveedor desconocido: {provider}")
-        await asyncio.wait_for(proc.communicate(), timeout=10)
+            await asyncio.wait_for(proc.communicate(), timeout=10)
     except Exception:
         pass
-    return {"status": "logged_out", "provider": provider}
-
+    return {"status": "logged_out"}
 
 # ---------------------------------------------------------------------------
-# Update AI chat to use configured provider
+# AI Chat
 # ---------------------------------------------------------------------------
+@app.get("/api/ai/suggestions")
+async def ai_suggestions(client_id: str | None = None, _a: Agency = Depends(_get_current_agency)):
+    base = ["Como ha sido el rendimiento general este mes?", "Que canal tiene mejor ROI?", "Genera un resumen ejecutivo", "Que mejoras recomiendas?"]
+    if client_id:
+        return {"suggestions": base + ["Compara el ultimo mes con el anterior"]}
+    return {"suggestions": base}
 
-# Patch the existing ai_chat endpoint to read default_provider
+async def _get_clients_summary(db: AsyncSession, agency_id) -> list[dict]:
+    clients_r = await db.execute(select(Client).where(Client.agency_id == agency_id))
+    result = []
+    cutoff = datetime.utcnow() - timedelta(days=30)
+    for c in clients_r.scalars().all():
+        metrics_r = await db.execute(select(Metric).where(Metric.client_id == c.id, Metric.date >= cutoff).order_by(Metric.date.desc()).limit(20))
+        summary = {}
+        for m in metrics_r.scalars().all():
+            key = f"{m.channel}/{m.metric_name}"
+            if key not in summary:
+                summary[key] = {"channel": m.channel, "metric": m.metric_name, "value": m.value}
+        result.append({"name": c.name, "industry": c.industry, "channels": list(c.channels.keys()), "metrics": list(summary.values())[:10]})
+    return result
+
 @app.post("/api/ai/chat", response_model=ChatResponse)
-async def ai_chat_v2(req: ChatRequest, db: AsyncSession = Depends(get_db), agency: Agency = Depends(_get_current_agency)):
-    # Override the provider based on config
+async def ai_chat(req: ChatRequest, db: AsyncSession = Depends(get_db), agency: Agency = Depends(_get_current_agency)):
+    allowed, remaining = _check_rate_limit(str(agency.id), max_requests=10, window=3600)
+    if not allowed:
+        raise HTTPException(429, "Limite alcanzado (10/hora)")
+
     config = _load_ai_config()
     provider = config.get("default_provider", "claude")
-
-    allowed, remaining = _check_rate_limit(str(agency.id))
-    if not allowed:
-        raise HTTPException(429, "Limite de peticiones alcanzado (10/hora)")
+    if provider not in ("claude", "codex"):
+        provider = "claude"
 
     # Build context
     if req.client_id:
         client_r = await db.execute(select(Client).where(Client.id == UUID(req.client_id)))
         client = client_r.scalar_one_or_none()
-        cutoff = datetime.utcnow() - timedelta(days=30)
-        metrics_r = await db.execute(select(Metric).where(Metric.client_id == UUID(req.client_id), Metric.date >= cutoff).order_by(Metric.date.desc()).limit(30))
-        metrics = metrics_r.scalars().all()
-        context = f"Cliente: {client.name} ({client.industry})\nCanales: {', '.join(client.channels.keys())}\nMetricas ultimos 30 dias:\n"
-        for m in metrics[:20]:
-            context += f"  {m.date.strftime('%d/%m')}: {m.channel}/{m.metric_name} = {m.value:.1f}\n"
+        if client:
+            cutoff = datetime.utcnow() - timedelta(days=30)
+            metrics_r = await db.execute(select(Metric).where(Metric.client_id == UUID(req.client_id), Metric.date >= cutoff).order_by(Metric.date.desc()).limit(20))
+            context = f"Cliente: {client.name} ({client.industry})\nMetricas:\n"
+            for m in metrics_r.scalars().all():
+                context += f"  {m.date.strftime('%d/%m')}: {m.channel}/{m.metric_name} = {m.value:.1f}\n"
+        else:
+            context = "Cliente no encontrado"
     else:
         clients_summary = await _get_clients_summary(db, agency.id)
-        context = f"Agencia: {agency.name}\nClientes:\n{json.dumps(clients_summary, indent=2, ensure_ascii=False)}"
+        context = json.dumps(clients_summary, indent=2, ensure_ascii=False)
 
-    system_prompt = f"""Eres el asistente IA de AgencyReport para la agencia "{agency.name}".
-Tienes acceso a datos reales de metricas de marketing digital.
-Responde siempre en espanol. Se conciso y practico.
-Usa datos concretos en tus respuestas cuando los tengas.
-
-DATOS DISPONIBLES:
-{context}"""
+    system_prompt = f"Eres el asistente de AgencyReport. Responde en espanol. Datos:\n{context}"
 
     try:
         if provider == "claude":
-            cmd = ["claude", "--print", "-p", f"[System: {system_prompt}]\n\nUsuario: {req.message}"]
-        elif provider == "codex":
-            cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", f"{system_prompt}\n\n{req.message}"]
+            cmd = ["claude", "--print", "-p", f"{system_prompt}\n\nUsuario: {req.message}"]
         else:
-            return ChatResponse(response=f"Proveedor '{provider}' no configurado", status="error", remaining_requests=remaining)
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd="/app")
+            cmd = ["codex", "exec", req.message]
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd="/app")
         stdout_data, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
-        response_text = stdout_data.decode("utf-8", errors="replace").strip()
-        if not response_text:
-            response_text = "No pude generar una respuesta. Verifica que el proveedor este autenticado en Configuracion."
-        return ChatResponse(response=response_text, status="ok", remaining_requests=remaining)
+        text = stdout_data.decode("utf-8", errors="replace").strip()
+        if not text:
+            text = "Sin respuesta. Verifica que el proveedor este autenticado en Configuracion."
+        return ChatResponse(response=text, status="ok", remaining_requests=remaining)
     except asyncio.TimeoutError:
-        return ChatResponse(response="El asistente tardo demasiado.", status="timeout", remaining_requests=remaining)
+        return ChatResponse(response="Timeout.", status="timeout", remaining_requests=remaining)
     except FileNotFoundError:
-        return ChatResponse(response=f"{provider} no esta instalado. Ve a Chat IA > Configuracion para verificar.", status="unavailable", remaining_requests=remaining)
-    except Exception as e:
-        return ChatResponse(response=f"Error: {str(e)[:200]}", status="error", remaining_requests=remaining)
-
-
-
-
+        return ChatResponse(response=f"{provider} no disponible. Ve a Configuracion.", status="unavailable", remaining_requests=remaining)
 
 # ---------------------------------------------------------------------------
-# Static files (frontend) - MUST be last
+# Static files - MUST be last
 # ---------------------------------------------------------------------------
 _static_dir = Path("/app/static")
 if _static_dir.is_dir():

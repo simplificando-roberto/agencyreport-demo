@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { API, isLoggedIn } from "../lib/api";
+import { API, checkAuth } from "../lib/api";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -10,8 +10,11 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [checking, setChecking] = useState(true);
 
-  useEffect(() => { if (isLoggedIn()) router.push("/dashboard/"); }, [router]);
+  useEffect(() => {
+    checkAuth().then(ok => { if (ok) router.push("/dashboard/"); }).finally(() => setChecking(false));
+  }, [router]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -20,15 +23,16 @@ export default function LoginPage() {
     try {
       const res = await fetch(`${API}/auth/login`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password }), credentials: "include",
       });
       if (!res.ok) { setError((await res.json().catch(() => ({}))).detail || "Credenciales invalidas"); return; }
       const data = await res.json();
-      localStorage.setItem("token", data.access_token);
-      localStorage.setItem("agency", data.agency_name);
+      localStorage.setItem("agency_name", data.agency_name);
       router.push("/dashboard/");
     } catch { setError("Error de conexion"); } finally { setLoading(false); }
   };
+
+  if (checking) return null;
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100">
@@ -42,13 +46,13 @@ export default function LoginPage() {
             <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
             <input type="email" value={email} onChange={e => setEmail(e.target.value)}
               className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-              placeholder="admin@agency.test" required />
+              placeholder="tu@email.com" required autoComplete="email" />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
             <input type="password" value={password} onChange={e => setPassword(e.target.value)}
               className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-              placeholder="********" required />
+              placeholder="********" required autoComplete="current-password" />
           </div>
           {error && <p className="text-red-500 text-sm bg-red-50 p-3 rounded-lg">{error}</p>}
           <button type="submit" disabled={loading}
@@ -56,9 +60,6 @@ export default function LoginPage() {
             {loading ? "Iniciando sesion..." : "Iniciar sesion"}
           </button>
         </form>
-        <div className="mt-6 p-4 bg-gray-50 rounded-lg">
-          <p className="text-xs text-gray-400 text-center">Demo: admin@agency.test / Demo2026secure!</p>
-        </div>
       </div>
     </div>
   );

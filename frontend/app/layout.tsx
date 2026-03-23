@@ -3,6 +3,7 @@
 import "./globals.css";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
+import { logout, getAgencyName } from "../lib/api";
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -35,10 +36,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     ))}
                   </nav>
                 </div>
-                <button onClick={() => { localStorage.clear(); window.location.href = "/"; }}
-                  className="text-sm text-gray-500 hover:text-red-500 transition-colors">
-                  Cerrar sesion
-                </button>
+                <div className="flex items-center gap-4">
+                  <span className="text-sm text-gray-500">{getAgencyName()}</span>
+                  <button onClick={() => logout()}
+                    className="text-sm text-gray-500 hover:text-red-500 transition-colors">
+                    Cerrar sesion
+                  </button>
+                </div>
               </div>
             </header>
             <main className="max-w-6xl mx-auto p-6">{children}</main>

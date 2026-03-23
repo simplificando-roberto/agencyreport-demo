@@ -20,14 +20,6 @@ RUN apt-get update -qq && apt-get install -y -qq curl && \
 # Install AI CLIs (claude code + codex) inside container
 RUN npm install -g @openai/codex@latest 2>/dev/null || true
 
-# Install ttyd (web terminal) - download prebuilt binary from official repo
-RUN curl -fsSL https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 -o /usr/local/bin/ttyd && \
-    chmod +x /usr/local/bin/ttyd
-
-# Generate self-signed cert for ttyd SSL (avoids mixed content blocking)
-RUN openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-    -keyout /etc/ssl/server.key -out /etc/ssl/server.crt \
-    -subj "/CN=localhost" 2>/dev/null
 
 # Python backend
 COPY backend/requirements.txt .
@@ -38,9 +30,14 @@ COPY backend/app/ app/
 COPY --from=frontend /build/.next/standalone /app/frontend/
 COPY --from=frontend /build/.next/static /app/frontend/.next/static/
 
-# Start script: both backend and frontend
+# Create non-root user
+RUN useradd -m -s /bin/bash appuser && \
+    chown -R appuser:appuser /app
+
+# Start script
 COPY start.sh /app/start.sh
 RUN chmod +x /app/start.sh
 
+USER appuser
 EXPOSE 8000 3000
 CMD ["/app/start.sh"]
