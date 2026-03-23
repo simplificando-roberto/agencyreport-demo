@@ -24,6 +24,11 @@ RUN npm install -g @openai/codex@latest 2>/dev/null || true
 RUN curl -fsSL https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 -o /usr/local/bin/ttyd && \
     chmod +x /usr/local/bin/ttyd
 
+# Generate self-signed cert for ttyd SSL (avoids mixed content blocking)
+RUN openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+    -keyout /etc/ssl/server.key -out /etc/ssl/server.crt \
+    -subj "/CN=localhost" 2>/dev/null
+
 # Python backend
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

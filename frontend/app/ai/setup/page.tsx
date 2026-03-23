@@ -64,7 +64,7 @@ export default function AISetupPage() {
   if (loading) return <div className="flex items-center justify-center h-64"><div className="animate-pulse text-gray-400">Cargando...</div></div>;
 
   const info = PROVIDERS[provider];
-  const terminalUrl = `http://${typeof window !== "undefined" ? window.location.hostname : ""}:7681`;
+  const terminalUrl = `https://${typeof window !== "undefined" ? window.location.hostname : ""}:7681`;
 
   return (
     <div className="h-[calc(100vh-100px)] flex flex-col">
