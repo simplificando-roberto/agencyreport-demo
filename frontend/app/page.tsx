@@ -10,10 +10,10 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [checking, setChecking] = useState(true);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    checkAuth().then(ok => { if (ok) router.push("/dashboard/"); }).finally(() => setChecking(false));
+    checkAuth().then(ok => { if (ok) router.push("/dashboard/"); else setReady(true); });
   }, [router]);
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -32,34 +32,80 @@ export default function LoginPage() {
     } catch { setError("Error de conexion"); } finally { setLoading(false); }
   };
 
-  if (checking) return null;
+  if (!ready) return null;
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100">
-      <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-blue-600">AgencyReport</h1>
-          <p className="text-gray-500 mt-2">Reporting automatizado para tu agencia</p>
+    <div className="min-h-screen flex relative overflow-hidden" style={{ background: "var(--bg-deep)" }}>
+      {/* Left: branding */}
+      <div className="hidden lg:flex flex-1 flex-col justify-between p-12 relative noise-overlay">
+        <div className="animate-fade-up">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold" style={{ background: "var(--accent)" }}>AR</div>
+            <span className="text-white/90 font-semibold tracking-tight">AgencyReport</span>
+          </div>
         </div>
-        <form onSubmit={handleLogin} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-            <input type="email" value={email} onChange={e => setEmail(e.target.value)}
-              className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-              placeholder="tu@email.com" required autoComplete="email" />
+        <div className="animate-fade-up" style={{ animationDelay: "0.2s" }}>
+          <h1 className="text-5xl text-white leading-tight mb-6" style={{ fontFamily: "'DM Serif Display', serif" }}>
+            Tus metricas.<br/>
+            <span style={{ color: "var(--accent)" }}>Automatizadas.</span>
+          </h1>
+          <p className="text-gray-400 text-lg max-w-md leading-relaxed">
+            Reportes profesionales con IA para tu agencia. Deja de perder horas en Excel.
+          </p>
+        </div>
+        <div className="animate-fade-up text-gray-600 text-xs" style={{ animationDelay: "0.4s" }}>
+          Dashboard de metricas &middot; Reportes PDF &middot; Asistente IA
+        </div>
+        {/* Decorative gradient orb */}
+        <div className="absolute -bottom-32 -left-32 w-96 h-96 rounded-full opacity-20 blur-3xl" style={{ background: "var(--accent)" }}></div>
+      </div>
+
+      {/* Right: form */}
+      <div className="flex-1 lg:max-w-lg flex items-center justify-center p-8 lg:p-16" style={{ background: "var(--bg-surface)" }}>
+        <div className="w-full max-w-sm animate-fade-up" style={{ animationDelay: "0.1s" }}>
+          <div className="lg:hidden flex items-center gap-3 mb-8">
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center text-white font-bold text-sm" style={{ background: "var(--accent)" }}>AR</div>
+            <span className="font-semibold tracking-tight" style={{ color: "var(--text-primary)" }}>AgencyReport</span>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-            <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-              className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-              placeholder="********" required autoComplete="current-password" />
-          </div>
-          {error && <p className="text-red-500 text-sm bg-red-50 p-3 rounded-lg">{error}</p>}
-          <button type="submit" disabled={loading}
-            className="w-full bg-blue-600 text-white py-3 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors">
-            {loading ? "Iniciando sesion..." : "Iniciar sesion"}
-          </button>
-        </form>
+
+          <h2 className="text-3xl mb-2" style={{ fontFamily: "'DM Serif Display', serif", color: "var(--text-primary)" }}>Bienvenido</h2>
+          <p className="mb-8" style={{ color: "var(--text-secondary)" }}>Inicia sesion en tu cuenta</p>
+
+          <form onSubmit={handleLogin} className="space-y-5">
+            <div>
+              <label className="block text-xs font-medium mb-1.5 uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Email</label>
+              <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+                className="w-full rounded-xl px-4 py-3 text-sm transition-all"
+                style={{ border: "1.5px solid var(--border)", background: "var(--bg-card)" }}
+                placeholder="tu@agencia.com" required autoComplete="email" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1.5 uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Password</label>
+              <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+                className="w-full rounded-xl px-4 py-3 text-sm transition-all"
+                style={{ border: "1.5px solid var(--border)", background: "var(--bg-card)" }}
+                placeholder="********" required autoComplete="current-password" />
+            </div>
+
+            {error && (
+              <div className="flex items-center gap-2 px-4 py-3 rounded-xl text-sm" style={{ background: "#FEF2F2", color: "var(--danger)" }}>
+                <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                {error}
+              </div>
+            )}
+
+            <button type="submit" disabled={loading}
+              className="w-full py-3.5 rounded-xl text-white font-medium text-sm transition-all hover:shadow-lg hover:shadow-orange-500/20 disabled:opacity-50"
+              style={{ background: "var(--accent)" }}>
+              {loading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/></svg>
+                  Accediendo...
+                </span>
+              ) : "Iniciar sesion"}
+            </button>
+          </form>
+        </div>
       </div>
     </div>
   );
