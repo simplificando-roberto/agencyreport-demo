@@ -1,25 +1,25 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { apiFetch } from "../../../lib/api";
 
 type ProviderInfo = { name: string; installed: boolean; authenticated: boolean; version: string };
 type SetupStatus = { default_provider: string; providers: Record<string, ProviderInfo> };
 
-const STEPS = {
-  claude: { cmd: "claude login", steps: [
-    "Pulsa el boton de abajo para ejecutar el login",
-    "Se mostrara una URL en el terminal -- copiala y abrela en tu navegador",
-    "Autoriza con tu cuenta de Anthropic (Claude)",
-    "Si te da un codigo, pegalo en el campo de input del terminal",
-    "Cuando termine, pulsa 'Verificar' para confirmar",
+const PROVIDERS = {
+  claude: { label: "Claude Code", cmd: "claude login", steps: [
+    "Pulsa 'Abrir terminal' abajo",
+    "En el terminal escribe: claude login",
+    "Aparecera una URL -- copiala y abrela en tu navegador",
+    "Autoriza con tu cuenta de Anthropic",
+    "Cuando termine, pulsa 'Verificar' aqui",
   ]},
-  codex: { cmd: "codex login", steps: [
-    "Pulsa el boton de abajo para ejecutar el login",
-    "Copia la URL que aparece y abrela en tu navegador",
-    "Autoriza con tu cuenta de OpenAI",
-    "Cuando termine, pulsa 'Verificar' para confirmar",
+  codex: { label: "Codex (OpenAI)", cmd: "codex login", steps: [
+    "Pulsa 'Abrir terminal' abajo",
+    "En el terminal escribe: codex login",
+    "Sigue las instrucciones que aparezcan",
+    "Cuando termine, pulsa 'Verificar' aqui",
   ]},
 };
 
@@ -27,14 +27,9 @@ export default function AISetupPage() {
   const [status, setStatus] = useState<SetupStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [provider, setProvider] = useState<"claude" | "codex">("claude");
-  const [sessionId, setSessionId] = useState("");
-  const [termOutput, setTermOutput] = useState("");
-  const [termInput, setTermInput] = useState("");
-  const [running, setRunning] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [message, setMessage] = useState({ text: "", type: "" });
-  const termRef = useRef<HTMLPreElement>(null);
-  const pollingRef = useRef<NodeJS.Timeout | null>(null);
+  const [terminalOpen, setTerminalOpen] = useState(false);
 
   const loadStatus = useCallback(async () => {
     setLoading(true);
@@ -44,49 +39,6 @@ export default function AISetupPage() {
 
   useEffect(() => { loadStatus(); }, [loadStatus]);
 
-  // Auto-scroll terminal
-  useEffect(() => {
-    if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight;
-  }, [termOutput]);
-
-  // Polling for terminal output
-  useEffect(() => {
-    if (!sessionId || !running) return;
-    const poll = async () => {
-      try {
-        const r = await apiFetch(`/ai/terminal/read?session_id=${sessionId}`);
-        const data = await r.json();
-        if (data.output) setTermOutput(prev => prev + data.output);
-        if (!data.alive) { setRunning(false); setTermOutput(prev => prev + "\n[Proceso terminado]\n"); }
-      } catch {}
-    };
-    pollingRef.current = setInterval(poll, 500);
-    return () => { if (pollingRef.current) clearInterval(pollingRef.current); };
-  }, [sessionId, running]);
-
-  const startLogin = async () => {
-    setTermOutput("");
-    setMessage({ text: "", type: "" });
-    const cmd = STEPS[provider].cmd;
-    setTermOutput(`$ ${cmd}\n`);
-    try {
-      const r = await apiFetch(`/ai/terminal/start?command=${encodeURIComponent(cmd)}`, { method: "POST" });
-      const data = await r.json();
-      setSessionId(data.session_id);
-      setRunning(true);
-    } catch { setTermOutput(prev => prev + "[Error al iniciar]\n"); }
-  };
-
-  const sendInput = async () => {
-    if (!termInput.trim() || !sessionId) return;
-    const text = termInput + "\n";
-    setTermOutput(prev => prev + text);
-    setTermInput("");
-    await apiFetch(`/ai/terminal/write?session_id=${sessionId}`, {
-      method: "POST", body: JSON.stringify({ text }),
-    });
-  };
-
   const verify = async () => {
     setVerifying(true);
     setMessage({ text: "", type: "" });
@@ -94,12 +46,12 @@ export default function AISetupPage() {
       const r = await apiFetch(`/ai/setup/verify?provider=${provider}`, { method: "POST" });
       const data = await r.json();
       if (data.authenticated) {
-        setMessage({ text: `${provider === "claude" ? "Claude Code" : "Codex"} conectado!`, type: "success" });
+        setMessage({ text: `${PROVIDERS[provider].label} conectado correctamente!`, type: "success" });
       } else {
         setMessage({ text: "Aun no autenticado. Completa el login en el terminal.", type: "error" });
       }
       await loadStatus();
-    } catch { setMessage({ text: "Error", type: "error" }); }
+    } catch { setMessage({ text: "Error al verificar", type: "error" }); }
     finally { setVerifying(false); }
   };
 
@@ -111,7 +63,8 @@ export default function AISetupPage() {
 
   if (loading) return <div className="flex items-center justify-center h-64"><div className="animate-pulse text-gray-400">Cargando...</div></div>;
 
-  const steps = STEPS[provider];
+  const info = PROVIDERS[provider];
+  const terminalUrl = `http://${typeof window !== "undefined" ? window.location.hostname : ""}:7681`;
 
   return (
     <div className="h-[calc(100vh-100px)] flex flex-col">
@@ -134,38 +87,44 @@ export default function AISetupPage() {
             <p className="text-sm font-medium text-gray-700 mb-2">Proveedor</p>
             <div className="flex gap-2">
               {(["claude", "codex"] as const).map(p => {
-                const info = status?.providers[p];
+                const pInfo = status?.providers[p];
                 return (
                   <button key={p} onClick={() => setProvider(p)}
                     className={`flex-1 p-3 rounded-lg border-2 text-sm font-medium transition-colors ${provider === p ? "border-blue-500 bg-blue-50 text-blue-700" : "border-gray-200 text-gray-600 hover:bg-gray-50"}`}>
-                    <div>{p === "claude" ? "Claude" : "Codex"}</div>
-                    <div className={`text-xs mt-1 ${info?.authenticated ? "text-green-600" : "text-gray-400"}`}>
-                      {info?.authenticated ? "Conectado" : info?.installed ? "Sin conectar" : "No instalado"}
+                    <div>{PROVIDERS[p].label}</div>
+                    <div className={`text-xs mt-1 ${pInfo?.authenticated ? "text-green-600" : "text-gray-400"}`}>
+                      {pInfo?.authenticated ? "Conectado" : pInfo?.installed ? "Sin conectar" : "No instalado"}
                     </div>
                   </button>
                 );
               })}
             </div>
+            {status?.default_provider && (
+              <p className="text-xs text-gray-400 mt-2">Activo: {PROVIDERS[status.default_provider as "claude" | "codex"]?.label || status.default_provider}</p>
+            )}
           </div>
 
           {/* Steps */}
           <div className="bg-white rounded-xl shadow p-4">
-            <p className="text-sm font-medium text-gray-700 mb-3">Pasos</p>
+            <p className="text-sm font-medium text-gray-700 mb-3">Pasos para conectar {info.label}</p>
             <ol className="space-y-2">
-              {steps.steps.map((s, i) => (
+              {info.steps.map((s, i) => (
                 <li key={i} className="flex gap-2 text-xs text-gray-600">
-                  <span className="bg-blue-100 text-blue-700 w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold shrink-0">{i + 1}</span>
+                  <span className="bg-blue-100 text-blue-700 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0">{i + 1}</span>
                   <span>{s}</span>
                 </li>
               ))}
             </ol>
+            <div className="mt-3 p-2 bg-gray-900 rounded text-green-400 font-mono text-xs">
+              $ {info.cmd}
+            </div>
           </div>
 
           {/* Actions */}
           <div className="bg-white rounded-xl shadow p-4 space-y-2">
-            <button onClick={startLogin} disabled={running}
-              className="w-full bg-blue-600 text-white py-2.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
-              {running ? "Ejecutando..." : `Ejecutar: ${steps.cmd}`}
+            <button onClick={() => setTerminalOpen(!terminalOpen)}
+              className="w-full bg-gray-900 text-green-400 py-2.5 rounded-lg text-sm font-medium hover:bg-gray-800">
+              {terminalOpen ? "Ocultar terminal" : "Abrir terminal"}
             </button>
             <button onClick={verify} disabled={verifying}
               className="w-full bg-green-600 text-white py-2.5 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50">
@@ -173,30 +132,29 @@ export default function AISetupPage() {
             </button>
             {status?.providers[provider]?.authenticated && status.default_provider !== provider && (
               <button onClick={() => setDefault(provider)}
-                className="w-full bg-gray-100 text-gray-700 py-2 rounded-lg text-sm hover:bg-gray-200">
+                className="w-full bg-blue-100 text-blue-700 py-2 rounded-lg text-sm hover:bg-blue-200">
                 Usar como proveedor por defecto
               </button>
             )}
           </div>
         </div>
 
-        {/* Right: Terminal */}
-        <div className="flex-1 flex flex-col bg-[#1a1b26] rounded-xl overflow-hidden min-h-0">
-          <pre ref={termRef} className="flex-1 overflow-y-auto p-4 text-sm font-mono text-green-400 whitespace-pre-wrap">
-            {termOutput || "Terminal listo. Pulsa el boton de login para empezar.\n"}
-          </pre>
-          <div className="flex border-t border-gray-700">
-            <span className="text-green-500 px-3 py-2 font-mono text-sm">$</span>
-            <input value={termInput} onChange={e => setTermInput(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && sendInput()}
-              placeholder={running ? "Escribe aqui si te pide algo..." : ""}
-              disabled={!running}
-              className="flex-1 bg-transparent text-green-400 font-mono text-sm py-2 outline-none placeholder-gray-600" />
-            <button onClick={sendInput} disabled={!running || !termInput.trim()}
-              className="text-green-500 px-3 py-2 text-sm hover:text-green-300 disabled:text-gray-600">
-              Enviar
-            </button>
-          </div>
+        {/* Right: Terminal (ttyd iframe) */}
+        <div className="flex-1 bg-gray-900 rounded-xl overflow-hidden min-h-0">
+          {terminalOpen ? (
+            <iframe
+              src={terminalUrl}
+              className="w-full h-full border-0"
+              title="Terminal del servidor"
+            />
+          ) : (
+            <div className="flex items-center justify-center h-full text-gray-500">
+              <div className="text-center">
+                <p className="text-lg mb-2">Terminal del servidor</p>
+                <p className="text-sm">Pulsa "Abrir terminal" para empezar</p>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

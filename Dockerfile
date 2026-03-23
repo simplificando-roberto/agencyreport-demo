@@ -20,6 +20,9 @@ RUN apt-get update -qq && apt-get install -y -qq curl && \
 # Install AI CLIs (claude code + codex) inside container
 RUN npm install -g @openai/codex@latest 2>/dev/null || true
 
+# Install ttyd (web terminal) - single binary
+RUN apt-get update -qq && apt-get install -y -qq ttyd && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Python backend
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

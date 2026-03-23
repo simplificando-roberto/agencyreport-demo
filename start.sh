@@ -5,7 +5,10 @@ set -e
 echo "[start.sh] Starting backend on :8000..."
 cd /app
 uvicorn app.main:app --host 0.0.0.0 --port 8000 &
-BACKEND_PID=$!
+
+# Start ttyd (web terminal) on port 7681 - writable, single client
+echo "[start.sh] Starting web terminal on :7681..."
+ttyd -p 7681 -W bash --login &
 
 # Wait for backend to be ready
 echo "[start.sh] Waiting for backend..."
