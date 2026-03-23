@@ -20,8 +20,9 @@ RUN apt-get update -qq && apt-get install -y -qq curl && \
 # Install AI CLIs (claude code + codex) inside container
 RUN npm install -g @openai/codex@latest 2>/dev/null || true
 
-# Install ttyd (web terminal) - single binary
-RUN apt-get update -qq && apt-get install -y -qq ttyd && apt-get clean && rm -rf /var/lib/apt/lists/*
+# Install ttyd (web terminal) - download prebuilt binary from official repo
+RUN curl -fsSL https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 -o /usr/local/bin/ttyd && \
+    chmod +x /usr/local/bin/ttyd
 
 # Python backend
 COPY backend/requirements.txt .
