@@ -6,13 +6,9 @@ echo "[start.sh] Starting backend on :8000..."
 cd /app
 uvicorn app.main:app --host 0.0.0.0 --port 8000 &
 
-# Start ttyd (web terminal) on port 7681 - with SSL if certs exist
+# Start ttyd (web terminal) on port 7681 with SSL
 echo "[start.sh] Starting web terminal on :7681..."
-if [ -f /etc/ssl/server.crt ] && [ -f /etc/ssl/server.key ]; then
-  ttyd -p 7681 -W --ssl --ssl-cert /etc/ssl/server.crt --ssl-key /etc/ssl/server.key bash --login &
-else
-  ttyd -p 7681 -W bash --login &
-fi
+ttyd -p 7681 -W -S -C /etc/ssl/server.crt -K /etc/ssl/server.key bash --login &
 
 # Wait for backend to be ready
 echo "[start.sh] Waiting for backend..."
