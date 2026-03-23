@@ -414,6 +414,31 @@ async def terminal_auth(req: TerminalAuthRequest, _a: Agency = Depends(_get_curr
 
 
 # ---------------------------------------------------------------------------
+# Host SSH execution (Claude/Codex run on HOST, not in container)
+# ---------------------------------------------------------------------------
+_SSH_KEY = "/app/.ssh/id_ed25519"
+_SSH_HOST = "agency@172.17.0.1"
+_SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/app/.ssh/known_hosts", "-o", "ConnectTimeout=5"]
+
+
+async def _host_exec(cmd: str, timeout: int = 30) -> tuple[str, int]:
+    """Execute a command on the HOST as the agency user via SSH."""
+    ssh_cmd = ["ssh", "-i", _SSH_KEY] + _SSH_OPTS + [_SSH_HOST, cmd]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *ssh_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        output = stdout.decode("utf-8", errors="replace").strip()
+        if not output and stderr:
+            output = stderr.decode("utf-8", errors="replace").strip()
+        return output, proc.returncode or 0
+    except asyncio.TimeoutError:
+        return "Timeout", 1
+    except Exception as e:
+        return str(e), 1
+
+
+# ---------------------------------------------------------------------------
 # AI Setup
 # ---------------------------------------------------------------------------
 _AI_CONFIG_PATH = Path("/app/config/ai_config.json") if Path("/app/config").is_dir() else Path("/tmp/ai_config.json")
@@ -428,26 +453,24 @@ def _save_ai_config(cfg: dict):
 
 async def _check_cli_status(cli: str) -> dict:
     result = {"installed": False, "authenticated": False, "version": ""}
-    try:
-        proc = await asyncio.create_subprocess_exec(cli, "--version", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
-        if proc.returncode == 0:
-            result["installed"] = True
-            result["version"] = stdout.decode().strip()
-    except (FileNotFoundError, asyncio.TimeoutError):
+    # Check via SSH to HOST
+    version_out, rc = await _host_exec(f"{cli} --version")
+    if rc == 0 and version_out:
+        result["installed"] = True
+        result["version"] = version_out.split("\n")[0]
+    else:
         return result
-    try:
-        if cli == "claude":
-            proc = await asyncio.create_subprocess_exec("claude", "auth", "status", "--json", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
-            data = json.loads(stdout.decode())
+    # Check auth
+    if cli == "claude":
+        auth_out, _ = await _host_exec("claude auth status --json")
+        try:
+            data = json.loads(auth_out)
             result["authenticated"] = data.get("loggedIn", False)
-        elif cli == "codex":
-            proc = await asyncio.create_subprocess_exec("codex", "login", "status", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
-            result["authenticated"] = proc.returncode == 0 and "logged in" in stdout.decode().lower()
-    except Exception:
-        pass
+        except Exception:
+            pass
+    elif cli == "codex":
+        _, rc = await _host_exec("codex login status")
+        result["authenticated"] = rc == 0
     return result
 
 @app.get("/api/ai/setup/status")
@@ -468,19 +491,16 @@ async def ai_setup_login(req: TokenInput, provider: str = "claude", _a: Agency =
     token_val = req.token.strip()
     if not token_val or len(token_val) < 10 or len(token_val) > 500:
         raise HTTPException(400, "Token invalido")
-    try:
-        if provider == "claude":
-            proc = await asyncio.create_subprocess_exec("claude", "setup-token", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        elif provider == "codex":
-            proc = await asyncio.create_subprocess_exec("codex", "login", "--with-api-key", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        else:
-            raise HTTPException(400, "Proveedor desconocido")
-        await asyncio.wait_for(proc.communicate(input=f"{token_val}\n".encode()), timeout=15)
-        await asyncio.sleep(1)
-        status = await _check_cli_status(provider)
-        return {"provider": provider, "authenticated": status["authenticated"], "message": "Conectado!" if status["authenticated"] else "Token no valido"}
-    except FileNotFoundError:
-        raise HTTPException(400, f"{provider} no instalado")
+    # Execute setup-token via SSH on HOST
+    if provider == "claude":
+        out, _ = await _host_exec(f"echo '{token_val}' | claude setup-token", timeout=15)
+    elif provider == "codex":
+        out, _ = await _host_exec(f"echo '{token_val}' | codex login --with-api-key", timeout=15)
+    else:
+        raise HTTPException(400, "Proveedor desconocido")
+    await asyncio.sleep(1)
+    status = await _check_cli_status(provider)
+    return {"provider": provider, "authenticated": status["authenticated"], "message": "Conectado!" if status["authenticated"] else f"Token no valido. {out[:100]}"}
 
 @app.post("/api/ai/setup/verify")
 async def ai_setup_verify(provider: str = "claude", _a: Agency = Depends(_get_current_agency)):
@@ -557,21 +577,17 @@ async def ai_chat(req: ChatRequest, db: AsyncSession = Depends(get_db), agency: 
 
     system_prompt = f"Eres el asistente de AgencyReport. Responde en espanol. Datos:\n{context}"
 
-    try:
-        if provider == "claude":
-            cmd = ["claude", "--print", "-p", f"{system_prompt}\n\nUsuario: {req.message}"]
-        else:
-            cmd = ["codex", "exec", req.message]
-        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd="/app")
-        stdout_data, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
-        text = stdout_data.decode("utf-8", errors="replace").strip()
-        if not text:
-            text = "Sin respuesta. Verifica que el proveedor este autenticado en Configuracion."
-        return ChatResponse(response=text, status="ok", remaining_requests=remaining)
-    except asyncio.TimeoutError:
-        return ChatResponse(response="Timeout.", status="timeout", remaining_requests=remaining)
-    except FileNotFoundError:
-        return ChatResponse(response=f"{provider} no disponible. Ve a Configuracion.", status="unavailable", remaining_requests=remaining)
+    # Execute via SSH on HOST
+    escaped_prompt = system_prompt.replace("'", "'\\''")
+    escaped_msg = req.message.replace("'", "'\\''")
+    if provider == "claude":
+        host_cmd = f"cd ~/app && claude --print -p '{escaped_prompt}\n\nUsuario: {escaped_msg}'"
+    else:
+        host_cmd = f"cd ~/app && codex exec '{escaped_msg}'"
+    text, rc = await _host_exec(host_cmd, timeout=120)
+    if not text:
+        text = "Sin respuesta. Verifica que el proveedor este autenticado en Configuracion."
+    return ChatResponse(response=text, status="ok" if rc == 0 else "error", remaining_requests=remaining)
 
 # ---------------------------------------------------------------------------
 # Static files - MUST be last

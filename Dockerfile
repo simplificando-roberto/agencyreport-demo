@@ -17,9 +17,9 @@ RUN apt-get update -qq && apt-get install -y -qq curl && \
     apt-get install -y -qq nodejs && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install AI CLIs (claude code + codex) inside container
-RUN npm install -g @openai/codex@latest 2>/dev/null || true
-
+# Install SSH client (for calling Claude/Codex on HOST)
+RUN apt-get update -qq && apt-get install -y -qq openssh-client && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Python backend
 COPY backend/requirements.txt .
