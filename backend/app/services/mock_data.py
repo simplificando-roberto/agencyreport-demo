@@ -1,7 +1,7 @@
 """Generate realistic mock data for 3 demo clients with anomalies and trends."""
 
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 DEMO_CLIENTS = [
     {
@@ -64,7 +64,7 @@ CLIENT_TRENDS = [0.006, 0.002, -0.003]
 
 def generate_metrics(client_channels: dict, days: int = 90, client_index: int = 0) -> list[dict]:
     metrics = []
-    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     trend_factor = CLIENT_TRENDS[client_index % len(CLIENT_TRENDS)]
 
     for channel, enabled in client_channels.items():
