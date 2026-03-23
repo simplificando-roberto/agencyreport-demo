@@ -42,7 +42,10 @@ export default function AISetupPage() {
     </div>
   );
 
-  const terminalUrl = `https://${typeof window !== "undefined" ? window.location.hostname : ""}:7681`;
+  // After modal auth, embed credentials in URL for the iframe (avoids browser popup)
+  const terminalUrl = terminalAuthed
+    ? `https://${encodeURIComponent(termUser)}:${encodeURIComponent(termPass)}@${typeof window !== "undefined" ? window.location.hostname : ""}:7681`
+    : "";
 
   return (
     <>
