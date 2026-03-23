@@ -42,10 +42,7 @@ export default function AISetupPage() {
     </div>
   );
 
-  // After modal auth, embed credentials in URL for the iframe (avoids browser popup)
-  const terminalUrl = terminalAuthed
-    ? `https://${encodeURIComponent(termUser)}:${encodeURIComponent(termPass)}@${typeof window !== "undefined" ? window.location.hostname : ""}:7681`
-    : "";
+  const terminalUrl = `https://${typeof window !== "undefined" ? window.location.hostname : ""}:7682`;
 
   return (
     <>
@@ -156,45 +153,9 @@ export default function AISetupPage() {
               </button>
             </div>
 
-            {!terminalAuthed ? (
-              <div className="flex-1 flex items-center justify-center">
-                <div className="w-full max-w-xs">
-                  <div className="text-center mb-6">
-                    <div className="w-12 h-12 mx-auto mb-3 rounded-xl flex items-center justify-center" style={{ background: "rgba(255,255,255,0.06)" }}>
-                      <svg className="w-6 h-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
-                      </svg>
-                    </div>
-                    <p className="text-sm text-gray-300" style={{ fontFamily: "'DM Serif Display', serif" }}>Acceso al terminal</p>
-                    <p className="text-xs text-gray-500 mt-1">Credenciales del servidor</p>
-                  </div>
-                  <form onSubmit={async e => {
-                    e.preventDefault();
-                    setTermError("");
-                    try {
-                      const r = await apiFetch("/ai/terminal/auth", { method: "POST", body: JSON.stringify({ user: termUser, password: termPass }) });
-                      const data = await r.json();
-                      if (data.ok) { setTerminalAuthed(true); } else { setTermError("Credenciales incorrectas"); }
-                    } catch { setTermError("Error de conexion"); }
-                  }} className="space-y-3">
-                    <input value={termUser} onChange={e => setTermUser(e.target.value)} placeholder="Usuario" required autoComplete="off"
-                      className="w-full rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-600 outline-none"
-                      style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)" }} />
-                    <input type="password" value={termPass} onChange={e => setTermPass(e.target.value)} placeholder="Contraseña" required autoComplete="off"
-                      className="w-full rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-600 outline-none"
-                      style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)" }} />
-                    {termError && <p className="text-xs text-center" style={{ color: "#F87171" }}>{termError}</p>}
-                    <button type="submit" className="w-full py-2.5 rounded-xl text-white text-sm font-medium transition-all hover:shadow-lg" style={{ background: "var(--accent)" }}>
-                      Acceder
-                    </button>
-                  </form>
-                </div>
-              </div>
-            ) : (
-              <div className="flex-1">
-                <iframe src={terminalUrl} className="w-full h-full border-0" title="Terminal" />
-              </div>
-            )}
+            <div className="flex-1">
+              <iframe src={terminalUrl} className="w-full h-full border-0" title="Terminal" />
+            </div>
           </div>
         </div>
       )}

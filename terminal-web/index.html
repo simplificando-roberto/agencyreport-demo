@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="es"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Terminal - AgencyReport</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Serif+Display&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:"DM Sans",sans-serif;background:#0C0F1A;color:#fff;height:100vh;display:flex;flex-direction:column}
+h1{font-family:"DM Serif Display",serif}
+#loginWrap{flex:1;display:flex;align-items:center;justify-content:center}
+.box{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:40px;width:100%;max-width:360px}
+.box h1{font-size:22px;margin-bottom:4px}
+.box p{color:#78716C;font-size:13px;margin-bottom:24px}
+input{width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:11px 14px;color:#fff;font-size:14px;outline:none;margin-bottom:10px}
+input:focus{border-color:#F97316;box-shadow:0 0 0 3px rgba(249,115,22,.15)}
+input::placeholder{color:#555}
+.btn{width:100%;background:#F97316;color:#fff;border:none;border-radius:12px;padding:11px;font-size:14px;font-weight:600;cursor:pointer}
+.btn:hover{background:#EA580C}
+.err{background:rgba(220,38,38,.15);color:#FCA5A5;padding:10px;border-radius:8px;font-size:13px;margin-bottom:10px;display:none}
+#termWrap{display:none;flex:1;flex-direction:column}
+#termWrap iframe{flex:1;border:0}
+.hdr{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid rgba(255,255,255,.06)}
+.hdr .logo{width:28px;height:28px;background:#F97316;border-radius:7px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:11px}
+.hdr .name{font-weight:600;font-size:13px}
+.hdr .tag{background:rgba(249,115,22,.12);color:#F97316;font-size:10px;padding:2px 8px;border-radius:5px;margin-left:auto}
+.hdr .out{color:#78716C;font-size:11px;cursor:pointer;background:none;border:none;margin-left:10px}
+.hdr .out:hover{color:#F87171}
+</style></head><body>
+<div id="loginWrap"><div class="box">
+<h1>Terminal</h1>
+<p>Claude Code y Codex en tu servidor</p>
+<div class="err" id="err"></div>
+<form onsubmit="doLogin(event)">
+<input id="u" placeholder="Usuario" required autocomplete="off">
+<input id="p" type="password" placeholder="Contrasena" required>
+<button class="btn" type="submit">Acceder</button>
+</form></div></div>
+<div id="termWrap">
+<div class="hdr"><div class="logo">AR</div><span class="name">Terminal</span><span class="tag">~/app</span>
+<button class="out" onclick="doLogout()">Salir</button></div>
+<iframe id="frm"></iframe></div>
+<script>
+var CRED={terminal:"Terminal2026"};
+function doLogin(e){e.preventDefault();
+var u=document.getElementById("u").value,p=document.getElementById("p").value,err=document.getElementById("err");
+if(CRED[u]&&CRED[u]===p){showTerm()}else{err.textContent="Credenciales incorrectas";err.style.display="block"}}
+function showTerm(){document.getElementById("loginWrap").style.display="none";
+var t=document.getElementById("termWrap");t.style.display="flex";
+document.getElementById("frm").src="http://127.0.0.1:7681/";sessionStorage.setItem("ta","1")}
+function doLogout(){sessionStorage.removeItem("ta");location.reload()}
+if(sessionStorage.getItem("ta")==="1")showTerm();
+</script></body></html>
