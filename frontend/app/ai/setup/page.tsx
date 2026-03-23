@@ -30,6 +30,10 @@ export default function AISetupPage() {
   const [verifying, setVerifying] = useState(false);
   const [message, setMessage] = useState({ text: "", type: "" });
   const [terminalOpen, setTerminalOpen] = useState(false);
+  const [terminalAuthed, setTerminalAuthed] = useState(false);
+  const [termUser, setTermUser] = useState("");
+  const [termPass, setTermPass] = useState("");
+  const [termError, setTermError] = useState("");
 
   const loadStatus = useCallback(async () => {
     setLoading(true);
@@ -201,31 +205,78 @@ export default function AISetupPage() {
 
       {/* Terminal Modal */}
       {terminalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
+          onClick={e => { if (e.target === e.currentTarget) { setTerminalOpen(false); setTerminalAuthed(false); } }}>
           <div className="w-full max-w-4xl h-[80vh] rounded-2xl overflow-hidden flex flex-col animate-fade-up" style={{ background: "var(--bg-deep)", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)" }}>
             {/* Modal header */}
             <div className="flex items-center justify-between px-5 py-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
               <div className="flex items-center gap-3">
                 <div className="flex gap-1.5">
-                  <button onClick={() => setTerminalOpen(false)} className="w-3 h-3 rounded-full hover:brightness-110" style={{ background: "#FF5F57" }}></button>
+                  <button onClick={() => { setTerminalOpen(false); setTerminalAuthed(false); }} className="w-3 h-3 rounded-full hover:brightness-110" style={{ background: "#FF5F57" }}></button>
                   <div className="w-3 h-3 rounded-full" style={{ background: "#FEBC2E" }}></div>
                   <div className="w-3 h-3 rounded-full" style={{ background: "#28C840" }}></div>
                 </div>
                 <span className="text-xs text-gray-400 font-mono">Terminal del servidor</span>
               </div>
-              <div className="flex items-center gap-3">
-                <span className="text-[10px] text-gray-500">
-                  Usuario: <span className="text-gray-400">admin</span> &middot; Se pedira contraseña al conectar
-                </span>
-                <button onClick={() => setTerminalOpen(false)} className="text-gray-500 hover:text-gray-300 transition-colors">
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" /></svg>
-                </button>
+              <button onClick={() => { setTerminalOpen(false); setTerminalAuthed(false); }} className="text-gray-500 hover:text-gray-300 transition-colors">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+
+            {/* Content: login form OR terminal */}
+            {!terminalAuthed ? (
+              <div className="flex-1 flex items-center justify-center">
+                <div className="w-full max-w-xs">
+                  <div className="text-center mb-6">
+                    <div className="w-12 h-12 mx-auto mb-3 rounded-xl flex items-center justify-center" style={{ background: "rgba(255,255,255,0.06)" }}>
+                      <svg className="w-6 h-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z" />
+                      </svg>
+                    </div>
+                    <p className="text-sm text-gray-300" style={{ fontFamily: "'DM Serif Display', serif" }}>Acceso al terminal</p>
+                    <p className="text-xs text-gray-500 mt-1">Introduce las credenciales del servidor</p>
+                  </div>
+
+                  <form onSubmit={async e => {
+                    e.preventDefault();
+                    setTermError("");
+                    try {
+                      const r = await apiFetch("/ai/terminal/auth", {
+                        method: "POST",
+                        body: JSON.stringify({ user: termUser, password: termPass }),
+                      });
+                      const data = await r.json();
+                      if (data.ok) {
+                        setTerminalAuthed(true);
+                      } else {
+                        setTermError("Credenciales incorrectas");
+                      }
+                    } catch {
+                      setTermError("Error de conexion");
+                    }
+                  }} className="space-y-3">
+                    <input value={termUser} onChange={e => setTermUser(e.target.value)}
+                      placeholder="Usuario" required autoComplete="off"
+                      className="w-full rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-600 outline-none"
+                      style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)" }} />
+                    <input type="password" value={termPass} onChange={e => setTermPass(e.target.value)}
+                      placeholder="Contraseña" required autoComplete="off"
+                      className="w-full rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-600 outline-none"
+                      style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)" }} />
+                    {termError && <p className="text-xs text-center" style={{ color: "var(--danger)" }}>{termError}</p>}
+                    <button type="submit"
+                      className="w-full py-2.5 rounded-xl text-white text-sm font-medium transition-all hover:shadow-lg"
+                      style={{ background: "var(--accent)" }}>
+                      Acceder
+                    </button>
+                  </form>
+                </div>
               </div>
-            </div>
-            {/* iframe */}
-            <div className="flex-1">
-              <iframe src={terminalUrl} className="w-full h-full border-0" title="Terminal" />
-            </div>
+            ) : (
+              <div className="flex-1">
+                <iframe src={terminalUrl} className="w-full h-full border-0" title="Terminal" />
+              </div>
+            )}
           </div>
         </div>
       )}

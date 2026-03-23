@@ -394,6 +394,26 @@ async def list_alerts(db: AsyncSession = Depends(get_db), agency: Agency = Depen
     return [AlertOut(id=str(a.id), client_name=cn, channel=a.channel, metric_name=a.metric_name, threshold=a.threshold, condition=a.condition, triggered=a.triggered) for a, cn in result.all()]
 
 # ---------------------------------------------------------------------------
+# Terminal auth
+# ---------------------------------------------------------------------------
+TERMINAL_USER = os.environ.get("TERMINAL_USER", "terminal")
+TERMINAL_PASSWORD = os.environ.get("TERMINAL_PASSWORD", "Terminal2026")
+
+
+class TerminalAuthRequest(BaseModel):
+    user: str
+    password: str
+
+
+@app.post("/api/ai/terminal/auth")
+async def terminal_auth(req: TerminalAuthRequest, _a: Agency = Depends(_get_current_agency)):
+    """Verify terminal credentials before showing the iframe."""
+    if req.user == TERMINAL_USER and req.password == TERMINAL_PASSWORD:
+        return {"ok": True}
+    return {"ok": False}
+
+
+# ---------------------------------------------------------------------------
 # AI Setup
 # ---------------------------------------------------------------------------
 _AI_CONFIG_PATH = Path("/app/config/ai_config.json") if Path("/app/config").is_dir() else Path("/tmp/ai_config.json")
