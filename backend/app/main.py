@@ -486,24 +486,9 @@ async def ai_setup_status(_a: Agency = Depends(_get_current_agency)):
         },
     }
 
-@app.post("/api/ai/setup/login")
-async def ai_setup_login(req: TokenInput, provider: str = "claude", _a: Agency = Depends(_get_current_agency)):
-    token_val = req.token.strip()
-    if not token_val or len(token_val) < 10 or len(token_val) > 500:
-        raise HTTPException(400, "Token invalido")
-    # Execute setup-token via SSH on HOST
-    if provider == "claude":
-        out, _ = await _host_exec(f"echo '{token_val}' | claude setup-token", timeout=15)
-    elif provider == "codex":
-        out, _ = await _host_exec(f"echo '{token_val}' | codex login --with-api-key", timeout=15)
-    else:
-        raise HTTPException(400, "Proveedor desconocido")
-    await asyncio.sleep(1)
-    status = await _check_cli_status(provider)
-    return {"provider": provider, "authenticated": status["authenticated"], "message": "Conectado!" if status["authenticated"] else f"Token no valido. {out[:100]}"}
-
 @app.post("/api/ai/setup/verify")
 async def ai_setup_verify(provider: str = "claude", _a: Agency = Depends(_get_current_agency)):
+    """Re-check auth status (after user does claude login in terminal)."""
     status = await _check_cli_status(provider)
     return {"provider": provider, "authenticated": status["authenticated"]}
 

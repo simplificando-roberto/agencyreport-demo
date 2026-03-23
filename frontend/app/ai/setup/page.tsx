@@ -7,27 +7,14 @@ import { apiFetch } from "../../../lib/api";
 type ProviderInfo = { name: string; installed: boolean; authenticated: boolean; version: string };
 type SetupStatus = { default_provider: string; providers: Record<string, ProviderInfo> };
 
-const PROVIDERS = {
-  claude: { label: "Claude Code", org: "Anthropic", cmd: "claude login", color: "#D97706", steps: [
-    "Escribe: claude login",
-    "Aparecera una URL -- copiala y abrela en tu navegador",
-    "Autoriza con tu cuenta de Anthropic",
-    "Si te da un codigo, pegalo en el terminal",
-    "Cuando termine, cierra el terminal y pulsa Verificar",
-  ]},
-  codex: { label: "Codex", org: "OpenAI", cmd: "codex login", color: "#10B981", steps: [
-    "Escribe: codex login",
-    "Sigue las instrucciones que aparezcan",
-    "Autoriza con tu cuenta de OpenAI",
-    "Cuando termine, cierra el terminal y pulsa Verificar",
-  ]},
+const PROVIDERS: Record<string, { label: string; org: string; cmd: string; color: string }> = {
+  claude: { label: "Claude Code", org: "Anthropic", cmd: "claude login", color: "#D97706" },
+  codex: { label: "Codex", org: "OpenAI", cmd: "codex login", color: "#10B981" },
 };
 
 export default function AISetupPage() {
   const [status, setStatus] = useState<SetupStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [provider, setProvider] = useState<"claude" | "codex">("claude");
-  const [verifying, setVerifying] = useState(false);
   const [message, setMessage] = useState({ text: "", type: "" });
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalAuthed, setTerminalAuthed] = useState(false);
@@ -43,31 +30,10 @@ export default function AISetupPage() {
 
   useEffect(() => { loadStatus(); }, [loadStatus]);
 
-  const verify = async () => {
-    setVerifying(true);
-    setMessage({ text: "", type: "" });
-    try {
-      const r = await apiFetch(`/ai/setup/verify?provider=${provider}`, { method: "POST" });
-      const data = await r.json();
-      setMessage({
-        text: data.authenticated ? `${PROVIDERS[provider].label} conectado correctamente!` : "Aun no autenticado. Completa el login en el terminal.",
-        type: data.authenticated ? "success" : "error",
-      });
-      await loadStatus();
-    } catch { setMessage({ text: "Error al verificar", type: "error" }); }
-    finally { setVerifying(false); }
-  };
-
   const setDefault = async (p: string) => {
     await apiFetch(`/ai/setup/default?provider=${p}`, { method: "POST" });
     await loadStatus();
     setMessage({ text: "Proveedor actualizado", type: "success" });
-  };
-
-  const doLogout = async (p: string) => {
-    await apiFetch(`/ai/setup/logout?provider=${p}`, { method: "POST" });
-    await loadStatus();
-    setMessage({ text: "Desconectado", type: "success" });
   };
 
   if (loading) return (
@@ -81,41 +47,27 @@ export default function AISetupPage() {
   return (
     <>
       <div className="stagger">
-        {/* Header */}
         <div className="mb-8">
           <Link href="/ai/" className="text-xs mb-2 inline-block transition-colors" style={{ color: "var(--accent)" }}>&larr; Volver al chat</Link>
           <h1 className="text-3xl" style={{ color: "var(--text-primary)" }}>Configuracion IA</h1>
           <p style={{ color: "var(--text-secondary)" }}>Conecta tu proveedor de inteligencia artificial</p>
         </div>
 
-        {/* Message */}
         {message.text && (
-          <div className="rounded-xl px-5 py-3.5 mb-6 text-sm flex items-center gap-2 animate-fade-up"
-            style={{ background: message.type === "success" ? "#ECFDF5" : "#FEF2F2", color: message.type === "success" ? "var(--success)" : "var(--danger)", border: `1px solid ${message.type === "success" ? "#A7F3D0" : "#FECACA"}` }}>
-            <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={message.type === "success" ? "M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" : "M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"} />
-            </svg>
+          <div className="rounded-xl px-5 py-3.5 mb-6 text-sm animate-fade-up"
+            style={{ background: message.type === "success" ? "#ECFDF5" : "#FEF2F2", color: message.type === "success" ? "var(--success)" : "var(--danger)" }}>
             {message.text}
           </div>
         )}
 
-        {/* Provider Cards */}
+        {/* Provider status cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-8">
-          {(["claude", "codex"] as const).map(key => {
+          {status && Object.entries(status.providers).map(([key, info]) => {
             const p = PROVIDERS[key];
-            const info = status?.providers[key];
-            const isDefault = status?.default_provider === key;
-            const isSelected = provider === key;
-
+            const isDefault = status.default_provider === key;
             return (
-              <button key={key} onClick={() => setProvider(key)}
-                className="text-left rounded-2xl p-6 transition-all card-hover relative overflow-hidden"
-                style={{
-                  background: "var(--bg-card)",
-                  border: `2px solid ${isSelected ? p.color : "var(--border)"}`,
-                  boxShadow: isSelected ? `0 0 0 3px ${p.color}20` : "0 1px 3px rgba(0,0,0,0.04)",
-                }}>
-                {/* Status badge */}
+              <div key={key} className="rounded-2xl p-6 relative"
+                style={{ background: "var(--bg-card)", border: `2px solid ${isDefault ? p.color : "var(--border)"}`, boxShadow: isDefault ? `0 0 0 3px ${p.color}20` : "none" }}>
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold text-xs" style={{ background: p.color }}>
@@ -127,146 +79,109 @@ export default function AISetupPage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    {isDefault && (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full font-medium" style={{ background: `${p.color}15`, color: p.color }}>Activo</span>
-                    )}
-                    {info?.authenticated ? (
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: "var(--success)" }}></span>
-                    ) : info?.installed ? (
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: "var(--text-muted)" }}></span>
-                    ) : (
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: "var(--danger)" }}></span>
-                    )}
+                    {isDefault && <span className="text-[10px] px-2 py-0.5 rounded-full font-medium" style={{ background: `${p.color}15`, color: p.color }}>Activo</span>}
+                    <span className={`w-2.5 h-2.5 rounded-full ${info.authenticated ? "animate-pulse" : ""}`} style={{ background: info.authenticated ? "var(--success)" : "var(--text-muted)" }}></span>
                   </div>
                 </div>
-
-                <div className="text-xs" style={{ color: info?.authenticated ? "var(--success)" : "var(--text-muted)" }}>
-                  {info?.authenticated ? `Conectado - ${info.version}` : info?.installed ? "Instalado, sin conectar" : "No instalado"}
+                <div className="text-xs mb-4" style={{ color: info.authenticated ? "var(--success)" : "var(--text-muted)" }}>
+                  {info.authenticated ? `Conectado - ${info.version}` : info.installed ? "Instalado, sin conectar" : "No instalado"}
                 </div>
-              </button>
+                {info.authenticated && !isDefault && (
+                  <button onClick={() => setDefault(key)} className="text-xs px-3 py-1.5 rounded-lg transition-colors" style={{ background: `${p.color}10`, color: p.color }}>
+                    Usar por defecto
+                  </button>
+                )}
+              </div>
             );
           })}
         </div>
 
-        {/* Actions for selected provider */}
+        {/* Terminal section */}
         <div className="rounded-2xl p-6" style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}>
-          <h2 className="text-xl mb-4" style={{ color: "var(--text-primary)" }}>
-            {PROVIDERS[provider].label}
-          </h2>
+          <h2 className="text-xl mb-2" style={{ color: "var(--text-primary)" }}>Terminal del servidor</h2>
+          <p className="text-sm mb-5" style={{ color: "var(--text-secondary)" }}>
+            Usa el terminal para conectar o gestionar los proveedores de IA.
+            El terminal tiene acceso al codigo de la aplicacion.
+          </p>
 
-          {/* Steps */}
-          <div className="mb-6">
-            <p className="text-xs font-medium uppercase tracking-wider mb-3" style={{ color: "var(--text-muted)" }}>Pasos para conectar</p>
-            <ol className="space-y-2.5">
-              {PROVIDERS[provider].steps.map((s, i) => (
-                <li key={i} className="flex gap-3 text-sm" style={{ color: "var(--text-secondary)" }}>
-                  <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 text-white" style={{ background: PROVIDERS[provider].color }}>{i + 1}</span>
-                  <span>{s}</span>
-                </li>
+          <div className="rounded-xl p-4 mb-5" style={{ background: "var(--bg-surface)" }}>
+            <p className="text-xs font-medium uppercase tracking-wider mb-3" style={{ color: "var(--text-muted)" }}>Comandos disponibles</p>
+            <div className="space-y-2">
+              {Object.entries(PROVIDERS).map(([key, p]) => (
+                <div key={key} className="flex items-center gap-3">
+                  <code className="text-xs font-mono px-2 py-1 rounded" style={{ background: "var(--bg-deep)", color: "#A5F3FC" }}>{p.cmd}</code>
+                  <span className="text-xs" style={{ color: "var(--text-muted)" }}>Conectar {p.label}</span>
+                </div>
               ))}
-            </ol>
+              <div className="flex items-center gap-3">
+                <code className="text-xs font-mono px-2 py-1 rounded" style={{ background: "var(--bg-deep)", color: "#A5F3FC" }}>claude &quot;mejora el dashboard&quot;</code>
+                <span className="text-xs" style={{ color: "var(--text-muted)" }}>Pedir a Claude que edite la app</span>
+              </div>
+            </div>
           </div>
 
-          {/* Command preview */}
-          <div className="rounded-xl p-4 mb-6 font-mono text-sm flex items-center justify-between" style={{ background: "var(--bg-deep)", color: "#A5F3FC" }}>
-            <span>$ {PROVIDERS[provider].cmd}</span>
-            <button onClick={() => navigator.clipboard.writeText(PROVIDERS[provider].cmd)} className="text-xs text-gray-500 hover:text-gray-300">Copiar</button>
-          </div>
+          <button onClick={() => setTerminalOpen(true)}
+            className="px-5 py-2.5 rounded-xl text-white text-sm font-medium transition-all hover:shadow-lg inline-flex items-center gap-2"
+            style={{ background: "var(--bg-deep)" }}>
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z" /></svg>
+            Abrir terminal
+          </button>
 
-          {/* Buttons */}
-          <div className="flex gap-3 flex-wrap">
-            <button onClick={() => setTerminalOpen(true)}
-              className="px-5 py-2.5 rounded-xl text-white text-sm font-medium transition-all hover:shadow-lg"
-              style={{ background: "var(--bg-deep)" }}>
-              Abrir terminal
-            </button>
-            <button onClick={verify} disabled={verifying}
-              className="px-5 py-2.5 rounded-xl text-white text-sm font-medium transition-all disabled:opacity-50"
-              style={{ background: "var(--success)" }}>
-              {verifying ? "Verificando..." : "Verificar autenticacion"}
-            </button>
-            {status?.providers[provider]?.authenticated && status.default_provider !== provider && (
-              <button onClick={() => setDefault(provider)}
-                className="px-5 py-2.5 rounded-xl text-sm font-medium transition-all"
-                style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
-                Usar por defecto
-              </button>
-            )}
-            {status?.providers[provider]?.authenticated && (
-              <button onClick={() => doLogout(provider)}
-                className="px-5 py-2.5 rounded-xl text-sm transition-colors"
-                style={{ color: "var(--danger)" }}>
-                Desconectar
-              </button>
-            )}
-          </div>
+          <button onClick={loadStatus} className="ml-3 px-5 py-2.5 rounded-xl text-sm transition-colors"
+            style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}>
+            Actualizar estado
+          </button>
         </div>
       </div>
 
       {/* Terminal Modal */}
       {terminalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
-          onClick={e => { if (e.target === e.currentTarget) { setTerminalOpen(false); setTerminalAuthed(false); } }}>
+          onClick={e => { if (e.target === e.currentTarget) { setTerminalOpen(false); setTerminalAuthed(false); setTermError(""); } }}>
           <div className="w-full max-w-4xl h-[80vh] rounded-2xl overflow-hidden flex flex-col animate-fade-up" style={{ background: "var(--bg-deep)", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)" }}>
-            {/* Modal header */}
             <div className="flex items-center justify-between px-5 py-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
               <div className="flex items-center gap-3">
                 <div className="flex gap-1.5">
-                  <button onClick={() => { setTerminalOpen(false); setTerminalAuthed(false); }} className="w-3 h-3 rounded-full hover:brightness-110" style={{ background: "#FF5F57" }}></button>
+                  <button onClick={() => { setTerminalOpen(false); setTerminalAuthed(false); setTermError(""); }} className="w-3 h-3 rounded-full hover:brightness-110" style={{ background: "#FF5F57" }}></button>
                   <div className="w-3 h-3 rounded-full" style={{ background: "#FEBC2E" }}></div>
                   <div className="w-3 h-3 rounded-full" style={{ background: "#28C840" }}></div>
                 </div>
-                <span className="text-xs text-gray-400 font-mono">Terminal del servidor</span>
+                <span className="text-xs text-gray-400 font-mono">Terminal &middot; ~/app</span>
               </div>
-              <button onClick={() => { setTerminalOpen(false); setTerminalAuthed(false); }} className="text-gray-500 hover:text-gray-300 transition-colors">
+              <button onClick={() => { setTerminalOpen(false); setTerminalAuthed(false); setTermError(""); }} className="text-gray-500 hover:text-gray-300 transition-colors">
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" /></svg>
               </button>
             </div>
 
-            {/* Content: login form OR terminal */}
             {!terminalAuthed ? (
               <div className="flex-1 flex items-center justify-center">
                 <div className="w-full max-w-xs">
                   <div className="text-center mb-6">
                     <div className="w-12 h-12 mx-auto mb-3 rounded-xl flex items-center justify-center" style={{ background: "rgba(255,255,255,0.06)" }}>
                       <svg className="w-6 h-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
                       </svg>
                     </div>
                     <p className="text-sm text-gray-300" style={{ fontFamily: "'DM Serif Display', serif" }}>Acceso al terminal</p>
-                    <p className="text-xs text-gray-500 mt-1">Introduce las credenciales del servidor</p>
+                    <p className="text-xs text-gray-500 mt-1">Credenciales del servidor</p>
                   </div>
-
                   <form onSubmit={async e => {
                     e.preventDefault();
                     setTermError("");
                     try {
-                      const r = await apiFetch("/ai/terminal/auth", {
-                        method: "POST",
-                        body: JSON.stringify({ user: termUser, password: termPass }),
-                      });
+                      const r = await apiFetch("/ai/terminal/auth", { method: "POST", body: JSON.stringify({ user: termUser, password: termPass }) });
                       const data = await r.json();
-                      if (data.ok) {
-                        setTerminalAuthed(true);
-                      } else {
-                        setTermError("Credenciales incorrectas");
-                      }
-                    } catch {
-                      setTermError("Error de conexion");
-                    }
+                      if (data.ok) { setTerminalAuthed(true); } else { setTermError("Credenciales incorrectas"); }
+                    } catch { setTermError("Error de conexion"); }
                   }} className="space-y-3">
-                    <input value={termUser} onChange={e => setTermUser(e.target.value)}
-                      placeholder="Usuario" required autoComplete="off"
+                    <input value={termUser} onChange={e => setTermUser(e.target.value)} placeholder="Usuario" required autoComplete="off"
                       className="w-full rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-600 outline-none"
                       style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)" }} />
-                    <input type="password" value={termPass} onChange={e => setTermPass(e.target.value)}
-                      placeholder="Contraseña" required autoComplete="off"
+                    <input type="password" value={termPass} onChange={e => setTermPass(e.target.value)} placeholder="Contraseña" required autoComplete="off"
                       className="w-full rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-600 outline-none"
                       style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)" }} />
-                    {termError && <p className="text-xs text-center" style={{ color: "var(--danger)" }}>{termError}</p>}
-                    <button type="submit"
-                      className="w-full py-2.5 rounded-xl text-white text-sm font-medium transition-all hover:shadow-lg"
-                      style={{ background: "var(--accent)" }}>
+                    {termError && <p className="text-xs text-center" style={{ color: "#F87171" }}>{termError}</p>}
+                    <button type="submit" className="w-full py-2.5 rounded-xl text-white text-sm font-medium transition-all hover:shadow-lg" style={{ background: "var(--accent)" }}>
                       Acceder
                     </button>
                   </form>
